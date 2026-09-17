@@ -1,0 +1,920 @@
+diff -ruN cli-split-merge-ui-v12-performance/AI_IMPLEMENTATION.md cli-split-merge-ui-v13-max-performance/AI_IMPLEMENTATION.md
+--- cli-split-merge-ui-v12-performance/AI_IMPLEMENTATION.md	2026-09-16 15:41:49.420896035 +0000
++++ cli-split-merge-ui-v13-max-performance/AI_IMPLEMENTATION.md	2026-09-16 15:46:46.839403351 +0000
+@@ -565,3 +565,12 @@
+ CLI 分割新增可配置重叠区域，默认 2.0 mm。该数值表示相邻区域最终公共重叠宽度；内部共享边界两侧各扩大一半，整体最外边界保持不变。UI 与 Rust 后端均校验 0~20 mm，并在本地记忆最近一次值。详见 `OVERLAP_IMPLEMENTATION.md`。
+ 
+ > **坐标系要求：** CLI 合并只适用于处于同一坐标系的输入文件。不要直接把 A0～F3 等不同振镜局部坐标系文件混合合并；如需合并，应先统一到同一坐标系。
++
++## v13 极限性能补充
++
++- split 主输入改为 memmap2 + memchr 零拷贝扫描。
++- POLYLINE/HATCH/HATCHES 改为字节切片直接解析。
++- 24 路输出采用可复用实体级 Vec<u8> 聚合后单次 write_all。
++- HATCHES 并行阈值/块大小按线程数自适应。
++- release 启用 LTO + codegen-units=1。
++- 详细说明见 `PERFORMANCE_V13_MAX.md`。
+diff -ruN cli-split-merge-ui-v12-performance/PERFORMANCE_OPTIMIZATION.md cli-split-merge-ui-v13-max-performance/PERFORMANCE_OPTIMIZATION.md
+--- cli-split-merge-ui-v12-performance/PERFORMANCE_OPTIMIZATION.md	2026-09-16 15:41:49.820896962 +0000
++++ cli-split-merge-ui-v13-max-performance/PERFORMANCE_OPTIMIZATION.md	2026-09-16 15:46:46.839781721 +0000
+@@ -116,3 +116,12 @@
+ - 不再在每个实体上重复调用 `region_with_overlap`。
+ - `overlap=0` 直接复用静态 REGIONS。
+ - 增加等价性单元测试，确保预计算不改变区域边界。
++
++## v13 极限性能补充
++
++- split 主输入改为 memmap2 + memchr 零拷贝扫描。
++- POLYLINE/HATCH/HATCHES 改为字节切片直接解析。
++- 24 路输出采用可复用实体级 Vec<u8> 聚合后单次 write_all。
++- HATCHES 并行阈值/块大小按线程数自适应。
++- release 启用 LTO + codegen-units=1。
++- 详细说明见 `PERFORMANCE_V13_MAX.md`。
+diff -ruN cli-split-merge-ui-v12-performance/PERFORMANCE_V13_MAX.md cli-split-merge-ui-v13-max-performance/PERFORMANCE_V13_MAX.md
+--- cli-split-merge-ui-v12-performance/PERFORMANCE_V13_MAX.md	1970-01-01 00:00:00.000000000 +0000
++++ cli-split-merge-ui-v13-max-performance/PERFORMANCE_V13_MAX.md	2026-09-16 15:46:13.453593039 +0000
+@@ -0,0 +1,91 @@
++# v13 极限性能优化
++
++本版建立在 v12 的单文件 HATCHES 并行和 ryu 数值输出优化之上，目标是继续降低单个大型 ASCII CLI 分割时的单核解析开销。
++
++## 1. mmap 零拷贝输入
++
++- split 不再使用 `BufReader::read_until()` 把每一行复制到 `Vec<u8>`。
++- 使用 `memmap2` 将 CLI 只读映射到虚拟内存。
++- 使用 `memchr` 直接定位换行符，每一行都是映射文件上的 `&[u8]` 切片。
++- 对超长 `$$HATCHES` 行尤其有利，减少内存复制与扩容。
++
++## 2. 几何区纯字节解析
++
++- `POLYLINE / HATCH / HATCHES / LAYER / GEOMETRYEND` 全部直接在 `&[u8]` 上识别。
++- 数值字段使用 `lexical-core` 直接从字节切片解析。
++- 几何热路径不再执行 `String::from_utf8_lossy()`。
++- 未知实体和 GBK 注释以原始字节透传，不再发生 lossy 转码。
++- 只有很小的 CLI 头部继续转为 String，用于 LABEL / DIMENSION 重写。
++
++## 3. 单实体输出聚合
++
++v12 虽然数值格式化不再分配 String，但一个 HATCHES 仍会产生大量：
++
++`write comma -> write number -> write comma -> write number ...`
++
++v13 为 24 个 OutputFile 各维护一个可复用 `line_buffer: Vec<u8>`：
++
++1. 在内存缓冲中拼完整的 POLYLINE/HATCHES ASCII 行；
++2. `ryu` 直接 append 浮点数字节；
++3. `itoa` 直接 append id/count/kind；
++4. 最后对 BufWriter 只做一次 `write_all()`。
++
++这显著减少函数调用和 BufWriter 热路径开销。
++
++## 4. 自适应 HATCHES 并行
++
++v12 固定 `4096` 条线段才启用并行，若文件由大量 1000~3000 段 HATCHES 构成，CPU 仍可能偏低。
++
++v13 根据线程数自适应阈值：
++
++- 阈值约 `max(512, threads × 256)`；
++- chunk 大小根据 `count / threads / 4` 动态计算，并限制在 128~2048；
++- 线程池仍然每个 CLI 只创建一次。
++
++## 5. release 编译配置
++
++新增：
++
++```toml
++[profile.release]
++opt-level = 3
++lto = true
++codegen-units = 1
++panic = "abort"
++strip = true
++```
++
++正式速度测试必须使用 `npm run tauri build` 的 release 包，不要用 debug 开发模式评估性能。
++
++## 6. 保留的优化
++
++- 24 区候选快速索引；
++- overlap 区域每文件只算一次；
++- overlap=0 直接借用静态 REGIONS；
++- 大 HATCHES 多线程裁剪/变换；
++- ryu 浮点输出；
++- 24 路 BufWriter；
++- 多输入文件并行；
++- 250ms UI 进度节流。
++
++## 建议测试设置
++
++单个大型 ASCII CLI：
++
++- 并行处理：开
++- 线程数：0（自动）
++- 写缓冲：4~8 MB
++- 重叠：按实际业务值
++
++v13 的 split 输入由 mmap 完成，因此“读缓冲大小”对 split 主路径不再是性能参数；该设置保留用于兼容/其它模块。
++
++## 仍可能存在的最终瓶颈
++
++经过 v13 后，如果 CPU 仍明显低于 50%，需要用实际 CLI 做 profiler（推荐 Windows Performance Recorder / cargo-flamegraph）确认：
++
++- 文件是否主要由大量很小的 POLYLINE 构成；
++- 单个 HATCHES 的平均 segment 数；
++- 24 路输出格式化是否成为主热点；
++- 防病毒/文件系统过滤驱动是否拦截大量输出文件。
++
++在没有真实 profiling 数据前，再继续增加线程或复杂流水线可能反而降低速度。
+diff -ruN cli-split-merge-ui-v12-performance/README.md cli-split-merge-ui-v13-max-performance/README.md
+--- cli-split-merge-ui-v12-performance/README.md	2026-09-16 15:41:49.756896815 +0000
++++ cli-split-merge-ui-v13-max-performance/README.md	2026-09-16 15:46:14.704998649 +0000
+@@ -84,3 +84,7 @@
+ ## v11 区域引用优化
+ 
+ CLI 分割在重叠量为 `0 mm` 时直接引用静态 `REGIONS`，不会复制 24 个区域；重叠量大于 0 时则只在每个 CLI 开始时预计算一次有效区域。详见 `REGION_ZERO_COPY_OPTIMIZATION.md`。
++
++## v13 极限性能优化
++
++分割热路径新增 mmap + memchr 零拷贝行扫描、几何区纯字节解析、单实体聚合输出、自适应 HATCHES 并行以及 release LTO。详见 `PERFORMANCE_V13_MAX.md`。
+diff -ruN cli-split-merge-ui-v12-performance/SPLIT_IMPLEMENTATION.md cli-split-merge-ui-v13-max-performance/SPLIT_IMPLEMENTATION.md
+--- cli-split-merge-ui-v12-performance/SPLIT_IMPLEMENTATION.md	2026-09-16 15:41:50.580898723 +0000
++++ cli-split-merge-ui-v13-max-performance/SPLIT_IMPLEMENTATION.md	2026-09-16 15:46:46.839649222 +0000
+@@ -185,3 +185,12 @@
+ ## 重叠区域（v8）
+ 
+ CLI 分割新增可配置重叠区域，默认 2.0 mm。该数值表示相邻区域最终公共重叠宽度；内部共享边界两侧各扩大一半，整体最外边界保持不变。UI 与 Rust 后端均校验 0~20 mm，并在本地记忆最近一次值。详见 `OVERLAP_IMPLEMENTATION.md`。
++
++## v13 极限性能补充
++
++- split 主输入改为 memmap2 + memchr 零拷贝扫描。
++- POLYLINE/HATCH/HATCHES 改为字节切片直接解析。
++- 24 路输出采用可复用实体级 Vec<u8> 聚合后单次 write_all。
++- HATCHES 并行阈值/块大小按线程数自适应。
++- release 启用 LTO + codegen-units=1。
++- 详细说明见 `PERFORMANCE_V13_MAX.md`。
+diff -ruN cli-split-merge-ui-v12-performance/V12_TO_V13.diff cli-split-merge-ui-v13-max-performance/V12_TO_V13.diff
+--- cli-split-merge-ui-v12-performance/V12_TO_V13.diff	1970-01-01 00:00:00.000000000 +0000
++++ cli-split-merge-ui-v13-max-performance/V12_TO_V13.diff	2026-09-16 15:46:47.081684217 +0000
+@@ -0,0 +1,154 @@
++diff -ruN cli-split-merge-ui-v12-performance/AI_IMPLEMENTATION.md cli-split-merge-ui-v13-max-performance/AI_IMPLEMENTATION.md
++--- cli-split-merge-ui-v12-performance/AI_IMPLEMENTATION.md	2026-09-16 15:41:49.420896035 +0000
+++++ cli-split-merge-ui-v13-max-performance/AI_IMPLEMENTATION.md	2026-09-16 15:46:46.839403351 +0000
++@@ -565,3 +565,12 @@
++ CLI 分割新增可配置重叠区域，默认 2.0 mm。该数值表示相邻区域最终公共重叠宽度；内部共享边界两侧各扩大一半，整体最外边界保持不变。UI 与 Rust 后端均校验 0~20 mm，并在本地记忆最近一次值。详见 `OVERLAP_IMPLEMENTATION.md`。
++ 
++ > **坐标系要求：** CLI 合并只适用于处于同一坐标系的输入文件。不要直接把 A0～F3 等不同振镜局部坐标系文件混合合并；如需合并，应先统一到同一坐标系。
+++
+++## v13 极限性能补充
+++
+++- split 主输入改为 memmap2 + memchr 零拷贝扫描。
+++- POLYLINE/HATCH/HATCHES 改为字节切片直接解析。
+++- 24 路输出采用可复用实体级 Vec<u8> 聚合后单次 write_all。
+++- HATCHES 并行阈值/块大小按线程数自适应。
+++- release 启用 LTO + codegen-units=1。
+++- 详细说明见 `PERFORMANCE_V13_MAX.md`。
++diff -ruN cli-split-merge-ui-v12-performance/PERFORMANCE_OPTIMIZATION.md cli-split-merge-ui-v13-max-performance/PERFORMANCE_OPTIMIZATION.md
++--- cli-split-merge-ui-v12-performance/PERFORMANCE_OPTIMIZATION.md	2026-09-16 15:41:49.820896962 +0000
+++++ cli-split-merge-ui-v13-max-performance/PERFORMANCE_OPTIMIZATION.md	2026-09-16 15:46:46.839781721 +0000
++@@ -116,3 +116,12 @@
++ - 不再在每个实体上重复调用 `region_with_overlap`。
++ - `overlap=0` 直接复用静态 REGIONS。
++ - 增加等价性单元测试，确保预计算不改变区域边界。
+++
+++## v13 极限性能补充
+++
+++- split 主输入改为 memmap2 + memchr 零拷贝扫描。
+++- POLYLINE/HATCH/HATCHES 改为字节切片直接解析。
+++- 24 路输出采用可复用实体级 Vec<u8> 聚合后单次 write_all。
+++- HATCHES 并行阈值/块大小按线程数自适应。
+++- release 启用 LTO + codegen-units=1。
+++- 详细说明见 `PERFORMANCE_V13_MAX.md`。
++diff -ruN cli-split-merge-ui-v12-performance/PERFORMANCE_V13_MAX.md cli-split-merge-ui-v13-max-performance/PERFORMANCE_V13_MAX.md
++--- cli-split-merge-ui-v12-performance/PERFORMANCE_V13_MAX.md	1970-01-01 00:00:00.000000000 +0000
+++++ cli-split-merge-ui-v13-max-performance/PERFORMANCE_V13_MAX.md	2026-09-16 15:46:13.453593039 +0000
++@@ -0,0 +1,91 @@
+++# v13 极限性能优化
+++
+++本版建立在 v12 的单文件 HATCHES 并行和 ryu 数值输出优化之上，目标是继续降低单个大型 ASCII CLI 分割时的单核解析开销。
+++
+++## 1. mmap 零拷贝输入
+++
+++- split 不再使用 `BufReader::read_until()` 把每一行复制到 `Vec<u8>`。
+++- 使用 `memmap2` 将 CLI 只读映射到虚拟内存。
+++- 使用 `memchr` 直接定位换行符，每一行都是映射文件上的 `&[u8]` 切片。
+++- 对超长 `$$HATCHES` 行尤其有利，减少内存复制与扩容。
+++
+++## 2. 几何区纯字节解析
+++
+++- `POLYLINE / HATCH / HATCHES / LAYER / GEOMETRYEND` 全部直接在 `&[u8]` 上识别。
+++- 数值字段使用 `lexical-core` 直接从字节切片解析。
+++- 几何热路径不再执行 `String::from_utf8_lossy()`。
+++- 未知实体和 GBK 注释以原始字节透传，不再发生 lossy 转码。
+++- 只有很小的 CLI 头部继续转为 String，用于 LABEL / DIMENSION 重写。
+++
+++## 3. 单实体输出聚合
+++
+++v12 虽然数值格式化不再分配 String，但一个 HATCHES 仍会产生大量：
+++
+++`write comma -> write number -> write comma -> write number ...`
+++
+++v13 为 24 个 OutputFile 各维护一个可复用 `line_buffer: Vec<u8>`：
+++
+++1. 在内存缓冲中拼完整的 POLYLINE/HATCHES ASCII 行；
+++2. `ryu` 直接 append 浮点数字节；
+++3. `itoa` 直接 append id/count/kind；
+++4. 最后对 BufWriter 只做一次 `write_all()`。
+++
+++这显著减少函数调用和 BufWriter 热路径开销。
+++
+++## 4. 自适应 HATCHES 并行
+++
+++v12 固定 `4096` 条线段才启用并行，若文件由大量 1000~3000 段 HATCHES 构成，CPU 仍可能偏低。
+++
+++v13 根据线程数自适应阈值：
+++
+++- 阈值约 `max(512, threads × 256)`；
+++- chunk 大小根据 `count / threads / 4` 动态计算，并限制在 128~2048；
+++- 线程池仍然每个 CLI 只创建一次。
+++
+++## 5. release 编译配置
+++
+++新增：
+++
+++```toml
+++[profile.release]
+++opt-level = 3
+++lto = true
+++codegen-units = 1
+++panic = "abort"
+++strip = true
+++```
+++
+++正式速度测试必须使用 `npm run tauri build` 的 release 包，不要用 debug 开发模式评估性能。
+++
+++## 6. 保留的优化
+++
+++- 24 区候选快速索引；
+++- overlap 区域每文件只算一次；
+++- overlap=0 直接借用静态 REGIONS；
+++- 大 HATCHES 多线程裁剪/变换；
+++- ryu 浮点输出；
+++- 24 路 BufWriter；
+++- 多输入文件并行；
+++- 250ms UI 进度节流。
+++
+++## 建议测试设置
+++
+++单个大型 ASCII CLI：
+++
+++- 并行处理：开
+++- 线程数：0（自动）
+++- 写缓冲：4~8 MB
+++- 重叠：按实际业务值
+++
+++v13 的 split 输入由 mmap 完成，因此“读缓冲大小”对 split 主路径不再是性能参数；该设置保留用于兼容/其它模块。
+++
+++## 仍可能存在的最终瓶颈
+++
+++经过 v13 后，如果 CPU 仍明显低于 50%，需要用实际 CLI 做 profiler（推荐 Windows Performance Recorder / cargo-flamegraph）确认：
+++
+++- 文件是否主要由大量很小的 POLYLINE 构成；
+++- 单个 HATCHES 的平均 segment 数；
+++- 24 路输出格式化是否成为主热点；
+++- 防病毒/文件系统过滤驱动是否拦截大量输出文件。
+++
+++在没有真实 profiling 数据前，再继续增加线程或复杂流水线可能反而降低速度。
++diff -ruN cli-split-merge-ui-v12-performance/README.md cli-split-merge-ui-v13-max-performance/README.md
++--- cli-split-merge-ui-v12-performance/README.md	2026-09-16 15:41:49.756896815 +0000
+++++ cli-split-merge-ui-v13-max-performance/README.md	2026-09-16 15:46:14.704998649 +0000
++@@ -84,3 +84,7 @@
++ ## v11 区域引用优化
++ 
++ CLI 分割在重叠量为 `0 mm` 时直接引用静态 `REGIONS`，不会复制 24 个区域；重叠量大于 0 时则只在每个 CLI 开始时预计算一次有效区域。详见 `REGION_ZERO_COPY_OPTIMIZATION.md`。
+++
+++## v13 极限性能优化
+++
+++分割热路径新增 mmap + memchr 零拷贝行扫描、几何区纯字节解析、单实体聚合输出、自适应 HATCHES 并行以及 release LTO。详见 `PERFORMANCE_V13_MAX.md`。
++diff -ruN cli-split-merge-ui-v12-performance/SPLIT_IMPLEMENTATION.md cli-split-merge-ui-v13-max-performance/SPLIT_IMPLEMENTATION.md
++--- cli-split-merge-ui-v12-performance/SPLIT_IMPLEMENTATION.md	2026-09-16 15:41:50.580898723 +0000
+++++ cli-split-merge-ui-v13-max-performance/SPLIT_IMPLEMENTATION.md	2026-09-16 15:46:46.839649222 +0000
++@@ -185,3 +185,12 @@
++ ## 重叠区域（v8）
++ 
++ CLI 分割新增可配置重叠区域，默认 2.0 mm。该数值表示相邻区域最终公共重叠宽度；内部共享边界两侧各扩大一半，整体最外边界保持不变。UI 与 Rust 后端均校验 0~20 mm，并在本地记忆最近一次值。详见 `OVERLAP_IMPLEMENTATION.md`。
+++
+++## v13 极限性能补充
+++
+++- split 主输入改为 memmap2 + memchr 零拷贝扫描。
+++- POLYLINE/HATCH/HATCHES 改为字节切片直接解析。
+++- 24 路输出采用可复用实体级 Vec<u8> 聚合后单次 write_all。
+++- HATCHES 并行阈值/块大小按线程数自适应。
+++- release 启用 LTO + codegen-units=1。
+++- 详细说明见 `PERFORMANCE_V13_MAX.md`。
+diff -ruN cli-split-merge-ui-v12-performance/src-tauri/Cargo.toml cli-split-merge-ui-v13-max-performance/src-tauri/Cargo.toml
+--- cli-split-merge-ui-v12-performance/src-tauri/Cargo.toml	2026-09-16 07:49:57.000000000 +0000
++++ cli-split-merge-ui-v13-max-performance/src-tauri/Cargo.toml	2026-09-16 15:46:13.445593015 +0000
+@@ -22,4 +22,14 @@
+ 
+ lexical-core = "1"
+ ryu = "1"
++itoa = "1"
++memmap2 = "0.9"
++memchr = "2"
+ rayon = "1.10"
++
++[profile.release]
++opt-level = 3
++lto = true
++codegen-units = 1
++panic = "abort"
++strip = true
+diff -ruN cli-split-merge-ui-v12-performance/src-tauri/src/split.rs cli-split-merge-ui-v13-max-performance/src-tauri/src/split.rs
+--- cli-split-merge-ui-v12-performance/src-tauri/src/split.rs	2026-09-16 15:33:45.733242049 +0000
++++ cli-split-merge-ui-v13-max-performance/src-tauri/src/split.rs	2026-09-16 15:46:35.696385307 +0000
+@@ -4,7 +4,7 @@
+ use std::{
+     collections::HashSet,
+     fs::{self, File},
+-    io::{BufRead, BufReader, BufWriter, Write},
++    io::{BufWriter, Write},
+     path::{Path, PathBuf},
+     sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
+     time::{Duration, Instant},
+@@ -96,6 +96,7 @@
+ }
+ 
+ impl Transform2D {
++    #[inline(always)]
+     fn apply(self, p: (f64, f64)) -> (f64, f64) {
+         (
+             self.a * p.0 - self.b * p.1 + self.tx,
+@@ -109,6 +110,9 @@
+     temp_path: PathBuf,
+     writer: BufWriter<File>,
+     next_id: u64,
++    // 热路径复用的单实体输出缓冲。先在内存中拼成完整 ASCII 行，再一次 write_all，
++    // 避免每个坐标/逗号都穿过 BufWriter::write_all。
++    line_buffer: Vec<u8>,
+ }
+ 
+ #[derive(Debug)]
+@@ -213,7 +217,7 @@
+     naming_template: &str,
+     transforms: &[Transform2D; REGION_COUNT],
+     overlap_mm: f64,
+-    read_capacity: usize,
++    _read_capacity: usize,
+     write_capacity: usize,
+     intra_file_parallel: bool,
+     worker_count: usize,
+@@ -258,7 +262,10 @@
+ 
+     let file = File::open(input_path)
+         .map_err(|e| format!("无法打开 CLI {}：{e}", input_path.display()))?;
+-    let mut reader = BufReader::with_capacity(read_capacity, file);
++    // v13: 64 位桌面环境使用只读 mmap + memchr 扫描行边界。
++    // 不再 read_until 把每一行复制进 Vec，超长 HATCHES 行直接以 &[u8] 切片解析。
++    let mapped = unsafe { memmap2::MmapOptions::new().map(&file) }
++        .map_err(|e| format!("内存映射 CLI {} 失败：{e}", input_path.display()))?;
+ 
+     let mut header: Vec<String> = Vec::new();
+     let mut preamble: Vec<String> = Vec::new();
+@@ -269,44 +276,45 @@
+     let mut unit = 1.0_f64;
+     let mut bytes_read = 0_u64;
+     let mut last_emit = Instant::now();
+-    let mut line_bytes = Vec::with_capacity(64 * 1024);
++    let mut line_start = 0usize;
+     // HATCHES 是大文件最常见的热点。24 个区域的容器只创建一次并反复 clear，
+     // 避免每条 HATCHES 都分配 24 组 Vec。
+     let mut hatch_scratch: Vec<Vec<HatchSegment>> =
+         (0..REGION_COUNT).map(|_| Vec::new()).collect();
+ 
+     loop {
+-        line_bytes.clear();
+-        let n = reader
+-            .read_until(b'\n', &mut line_bytes)
+-            .map_err(|e| format!("读取 CLI {} 失败：{e}", input_path.display()))?;
+-        if n == 0 {
++        if line_start >= mapped.len() {
+             break;
+         }
+-        bytes_read = bytes_read.saturating_add(n as u64);
+-        // CLI 几何关键字/数值是 ASCII；LABEL/注释在国内设备上可能是 GBK。
+-        // 使用 lossy 解码避免非 UTF-8 标注导致整单失败，几何 ASCII 部分不受影响。
+-        let decoded = String::from_utf8_lossy(&line_bytes);
+-        let stripped = decoded.trim_end_matches(['\r', '\n']);
+-        let normalized = stripped.strip_prefix('\u{feff}').unwrap_or(stripped);
+-        let token = normalized.trim();
++        let remaining = &mapped[line_start..];
++        let line_end = memchr::memchr(b'\n', remaining)
++            .map(|offset| line_start + offset + 1)
++            .unwrap_or(mapped.len());
++        let line_bytes = &mapped[line_start..line_end];
++        line_start = line_end;
++        bytes_read = line_end as u64;
++        // v13 热路径：几何区完全按原始字节处理。CLI 几何关键字/数值本身是 ASCII，
++        // 因此无需为每一行做 UTF-8/lossy -> String 分配；GBK LABEL/注释也能原样透传。
++        let normalized_bytes = normalize_cli_line_bytes(line_bytes);
++        let token_bytes = trim_ascii_bytes(normalized_bytes);
+ 
+         if !geometry_started {
+-            if token.eq_ignore_ascii_case("$$GEOMETRYSTART") {
++            if eq_ascii_ci_bytes(token_bytes, b"$$GEOMETRYSTART") {
+                 geometry_started = true;
+                 unit = parse_units(&header)?;
+             } else {
+-                header.push(normalized.to_string());
++                // 头部通常只有几十行，保留 String 便于 LABEL/DIMENSION 重写；此处不在性能热点。
++                header.push(String::from_utf8_lossy(normalized_bytes).into_owned());
+             }
+             continue;
+         }
+ 
+-        if token.eq_ignore_ascii_case("$$GEOMETRYEND") {
++        if eq_ascii_ci_bytes(token_bytes, b"$$GEOMETRYEND") {
+             geometry_finished = true;
+             break;
+         }
+ 
+-        if starts_with_ascii_ci(token, "$$POLYLINE/") {
++        if starts_with_ascii_ci_bytes(token_bytes, b"$$POLYLINE/") {
+             first_geometry_seen = true;
+             if outputs.is_none() {
+                 outputs = Some(open_outputs(
+@@ -322,7 +330,7 @@
+                     write_capacity,
+                 )?);
+             }
+-            let poly = parse_polyline(normalized, unit)?;
++            let poly = parse_polyline_bytes(normalized_bytes, unit)?;
+             let bbox = points_bbox(&poly.points);
+             let outs = outputs.as_mut().expect("outputs opened");
+ 
+@@ -341,10 +349,12 @@
+                     }
+                     let id = outs[r_index].next_id;
+                     outs[r_index].next_id += 1;
+-                    write_polyline(&mut outs[r_index].writer, id, poly.kind, &piece, local, unit)?;
++                    write_polyline_buffered(&mut outs[r_index], id, poly.kind, &piece, local, unit)?;
+                 }
+             }
+-        } else if starts_with_ascii_ci(token, "$$HATCHES/") || starts_with_ascii_ci(token, "$$HATCH/") {
++        } else if starts_with_ascii_ci_bytes(token_bytes, b"$$HATCHES/")
++            || starts_with_ascii_ci_bytes(token_bytes, b"$$HATCH/")
++        {
+             first_geometry_seen = true;
+             if outputs.is_none() {
+                 outputs = Some(open_outputs(
+@@ -361,8 +371,8 @@
+                 )?);
+             }
+             let outs = outputs.as_mut().expect("outputs opened");
+-            process_hatches_line(
+-                normalized,
++            process_hatches_line_bytes(
++                normalized_bytes,
+                 unit,
+                 outs,
+                 transforms,
+@@ -372,18 +382,19 @@
+                 intra_pool.as_ref(),
+             )?;
+         } else if !first_geometry_seen {
+-            preamble.push(normalized.to_string());
+-        } else if starts_with_ascii_ci(token, "$$LAYER/") {
++            // GEOMETRYSTART 后、首个几何实体前的少量元数据仍保留文本形式。
++            preamble.push(String::from_utf8_lossy(normalized_bytes).into_owned());
++        } else if starts_with_ascii_ci_bytes(token_bytes, b"$$LAYER/") {
+             if let Some(outs) = outputs.as_mut() {
+                 for out in outs {
+-                    writeln!(out.writer, "{normalized}")
++                    write_raw_line(&mut out.writer, normalized_bytes)
+                         .map_err(|e| format!("写入 LAYER 失败：{e}"))?;
+                 }
+             }
+         } else if let Some(outs) = outputs.as_mut() {
+-            // 未识别的几何扩展/注释不再静默丢弃，原样（lossy 文本）透传到 24 路输出。
++            // 未知几何扩展/GBK 注释按原始字节透传，不再做 lossy 转码。
+             for out in outs {
+-                writeln!(out.writer, "{normalized}")
++                write_raw_line(&mut out.writer, normalized_bytes)
+                     .map_err(|e| format!("透传未知 CLI 实体失败：{e}"))?;
+             }
+         }
+@@ -472,7 +483,7 @@
+         for line in preamble {
+             writeln!(writer, "{line}").map_err(|e| format!("写入 CLI 失败：{e}"))?;
+         }
+-        outputs.push(OutputFile { final_path, temp_path, writer, next_id: 1 });
++        outputs.push(OutputFile { final_path, temp_path, writer, next_id: 1, line_buffer: Vec::with_capacity(64 * 1024) });
+     }
+     Ok(outputs)
+ }
+@@ -772,27 +783,92 @@
+     Ok(1.0)
+ }
+ 
+-fn parse_polyline(line: &str, unit: f64) -> Result<Polyline, String> {
+-    let payload = line
+-        .split_once('/')
+-        .map(|(_, rhs)| rhs)
+-        .ok_or_else(|| format!("POLYLINE 格式错误：{line}"))?;
+-    let mut it = payload.split(',');
+-    let _id = next_field(&mut it, "POLYLINE ID")?;
+-    let kind = parse_i32(next_field(&mut it, "POLYLINE 类型")?, "POLYLINE 类型")?;
+-    let count = parse_usize(next_field(&mut it, "POLYLINE 点数")?, "POLYLINE 点数")?;
++fn parse_polyline_bytes(line: &[u8], unit: f64) -> Result<Polyline, String> {
++    let slash = line.iter().position(|&b| b == b'/')
++        .ok_or_else(|| "POLYLINE 格式错误：缺少 /".to_string())?;
++    let payload = &line[slash + 1..];
++    let mut it = payload.split(|&b| b == b',');
++    let _id = next_field_bytes(&mut it, "POLYLINE ID")?;
++    let kind = parse_i32_bytes(next_field_bytes(&mut it, "POLYLINE 类型")?, "POLYLINE 类型")?;
++    let count = parse_usize_bytes(next_field_bytes(&mut it, "POLYLINE 点数")?, "POLYLINE 点数")?;
+     if count < 2 || count > 1_000_000 {
+         return Err(format!("POLYLINE 点数异常：{count}"));
+     }
+     let mut points = Vec::with_capacity(count);
+     for _ in 0..count {
+-        let x = parse_f64(next_field(&mut it, "POLYLINE X")?, "POLYLINE X")? * unit;
+-        let y = parse_f64(next_field(&mut it, "POLYLINE Y")?, "POLYLINE Y")? * unit;
++        let x = parse_f64_bytes(next_field_bytes(&mut it, "POLYLINE X")?, "POLYLINE X")? * unit;
++        let y = parse_f64_bytes(next_field_bytes(&mut it, "POLYLINE Y")?, "POLYLINE Y")? * unit;
+         points.push((x, y));
+     }
+     Ok(Polyline { kind, points })
+ }
+ 
++fn normalize_cli_line_bytes(line: &[u8]) -> &[u8] {
++    let mut end = line.len();
++    while end > 0 && matches!(line[end - 1], b'\r' | b'\n') {
++        end -= 1;
++    }
++    let mut out = &line[..end];
++    if out.starts_with(&[0xEF, 0xBB, 0xBF]) {
++        out = &out[3..];
++    }
++    out
++}
++
++#[inline]
++fn trim_ascii_bytes(mut value: &[u8]) -> &[u8] {
++    while let Some((&first, rest)) = value.split_first() {
++        if first.is_ascii_whitespace() { value = rest; } else { break; }
++    }
++    while let Some((&last, rest)) = value.split_last() {
++        if last.is_ascii_whitespace() { value = rest; } else { break; }
++    }
++    value
++}
++
++#[inline]
++fn eq_ascii_ci_bytes(a: &[u8], b: &[u8]) -> bool {
++    a.len() == b.len() && a.iter().zip(b).all(|(&x, &y)| x.eq_ignore_ascii_case(&y))
++}
++
++#[inline]
++fn starts_with_ascii_ci_bytes(value: &[u8], prefix: &[u8]) -> bool {
++    value.len() >= prefix.len()
++        && value[..prefix.len()].iter().zip(prefix).all(|(&x, &y)| x.eq_ignore_ascii_case(&y))
++}
++
++#[inline]
++fn next_field_bytes<'a>(
++    it: &mut impl Iterator<Item = &'a [u8]>,
++    name: &str,
++) -> Result<&'a [u8], String> {
++    it.next().map(trim_ascii_bytes).ok_or_else(|| format!("缺少字段：{name}"))
++}
++
++#[inline]
++fn parse_i32_bytes(value: &[u8], name: &str) -> Result<i32, String> {
++    lexical_core::parse::<i32>(trim_ascii_bytes(value))
++        .map_err(|_| format!("{name} 不是整数：{}", String::from_utf8_lossy(value)))
++}
++
++#[inline]
++fn parse_usize_bytes(value: &[u8], name: &str) -> Result<usize, String> {
++    lexical_core::parse::<usize>(trim_ascii_bytes(value))
++        .map_err(|_| format!("{name} 不是整数：{}", String::from_utf8_lossy(value)))
++}
++
++#[inline]
++fn parse_f64_bytes(value: &[u8], name: &str) -> Result<f64, String> {
++    lexical_core::parse::<f64>(trim_ascii_bytes(value))
++        .map_err(|_| format!("{name} 不是数值：{}", String::from_utf8_lossy(value)))
++}
++
++#[inline]
++fn write_raw_line(writer: &mut BufWriter<File>, line: &[u8]) -> std::io::Result<()> {
++    writer.write_all(line)?;
++    writer.write_all(b"\n")
++}
++
+ fn next_field<'a>(it: &mut impl Iterator<Item = &'a str>, name: &str) -> Result<&'a str, String> {
+     it.next().ok_or_else(|| format!("缺少字段：{name}"))
+ }
+@@ -848,10 +924,12 @@
+     std::array::from_fn(|index| region_with_overlap(index, overlap_mm))
+ }
+ 
++#[inline(always)]
+ fn bbox_intersects_region(b: (f64, f64, f64, f64), r: Region) -> bool {
+     !(b.1 < r.xmin - EPS || b.0 > r.xmax + EPS || b.3 < r.ymin - EPS || b.2 > r.ymax + EPS)
+ }
+ 
++#[inline]
+ fn candidate_regions_for_bbox(
+     b: (f64, f64, f64, f64),
+     regions: &[Region; REGION_COUNT],
+@@ -879,8 +957,8 @@
+     (out, count)
+ }
+ 
+-fn process_hatches_line(
+-    line: &str,
++fn process_hatches_line_bytes(
++    line: &[u8],
+     unit: f64,
+     outs: &mut [OutputFile],
+     transforms: &[Transform2D; REGION_COUNT],
+@@ -893,20 +971,19 @@
+         bucket.clear();
+     }
+ 
+-    let payload = line
+-        .split_once('/')
+-        .map(|(_, rhs)| rhs)
+-        .ok_or_else(|| format!("HATCHES 格式错误：{line}"))?;
++    let slash = line.iter().position(|&b| b == b'/')
++        .ok_or_else(|| "HATCHES 格式错误：缺少 /".to_string())?;
++    let payload = &line[slash + 1..];
+ 
+     // 两种允许格式：id,count,(x1,y1,x2,y2)*N 或 id,kind,count,(...)*N。
+-    // 严格校验字段数，避免 kind 恰好满足旧启发式时误判。
+-    let field_count = payload.as_bytes().iter().filter(|&&b| b == b',').count() + 1;
+-    let mut probe = payload.split(',');
+-    let _id_probe = next_field(&mut probe, "HATCHES ID")?;
+-    let second_text = next_field(&mut probe, "HATCHES 数量/类型")?;
+-    let second_as_count = parse_usize(second_text, "HATCHES 数量/类型").ok();
+-    let third_text = probe.next();
+-    let third_as_count = third_text.and_then(|v| parse_usize(v, "HATCHES 线段数").ok());
++    // 全程使用 &[u8] 字段切片，不构造 UTF-8 String。
++    let field_count = payload.iter().filter(|&&b| b == b',').count() + 1;
++    let mut probe = payload.split(|&b| b == b',');
++    let _id_probe = next_field_bytes(&mut probe, "HATCHES ID")?;
++    let second_text = next_field_bytes(&mut probe, "HATCHES 数量/类型")?;
++    let second_as_count = parse_usize_bytes(second_text, "HATCHES 数量/类型").ok();
++    let third_text = probe.next().map(trim_ascii_bytes);
++    let third_as_count = third_text.and_then(|v| parse_usize_bytes(v, "HATCHES 线段数").ok());
+ 
+     let format1 = second_as_count
+         .map(|n| field_count == 2usize.saturating_add(n.saturating_mul(4)))
+@@ -919,14 +996,14 @@
+         return Err(format!("HATCHES 格式无法识别：字段数={field_count}"));
+     }
+ 
+-    let mut it = payload.split(',');
+-    let _id = next_field(&mut it, "HATCHES ID")?;
+-    let second_text = next_field(&mut it, "HATCHES 数量/类型")?;
++    let mut it = payload.split(|&b| b == b',');
++    let _id = next_field_bytes(&mut it, "HATCHES ID")?;
++    let second_text = next_field_bytes(&mut it, "HATCHES 数量/类型")?;
+     let (kind, count) = if format1 {
+-        (0, parse_usize(second_text, "HATCHES 线段数")?)
++        (0, parse_usize_bytes(second_text, "HATCHES 线段数")?)
+     } else {
+-        let kind = parse_i32(second_text, "HATCHES 类型")?;
+-        let count = parse_usize(next_field(&mut it, "HATCHES 线段数")?, "HATCHES 线段数")?;
++        let kind = parse_i32_bytes(second_text, "HATCHES 类型")?;
++        let count = parse_usize_bytes(next_field_bytes(&mut it, "HATCHES 线段数")?, "HATCHES 线段数")?;
+         (kind, count)
+     };
+ 
+@@ -934,32 +1011,33 @@
+         return Err(format!("HATCHES 线段数异常：{count}"));
+     }
+ 
+-    const PARALLEL_HATCH_THRESHOLD: usize = 4096;
+-    const PARALLEL_HATCH_CHUNK: usize = 1024;
+-
+-    if let Some(pool) = intra_pool.filter(|_| count >= PARALLEL_HATCH_THRESHOLD) {
+-        // 单文件时 CPU 利用率容易受限于单核。大 HATCHES 先解析为紧凑线段数组，
+-        // 再按 chunk 并行做候选筛选 + Liang-Barsky 裁剪 + 坐标变换。
+-        // par_chunks 的 collect 保持 chunk 顺序，最终合并时维持原线段顺序。
++    // 小实体串行更快；中/大实体根据实际线程数自适应启用并行。
++    // 固定 4096 的旧阈值会让“很多 1k~3k 线段 HATCHES”的文件长期只跑单核。
++    let parallel_threshold = intra_pool
++        .map(|pool| pool.current_num_threads().saturating_mul(256).max(512))
++        .unwrap_or(usize::MAX);
++
++    if let Some(pool) = intra_pool.filter(|_| count >= parallel_threshold) {
++        let threads = pool.current_num_threads().max(1);
++        let parallel_chunk = (count / threads.saturating_mul(4).max(1)).clamp(128, 2048);
+         let mut segments = Vec::with_capacity(count);
+         for _ in 0..count {
+-            let x1 = parse_f64(next_field(&mut it, "HATCHES x1")?, "HATCHES x1")? * unit;
+-            let y1 = parse_f64(next_field(&mut it, "HATCHES y1")?, "HATCHES y1")? * unit;
+-            let x2 = parse_f64(next_field(&mut it, "HATCHES x2")?, "HATCHES x2")? * unit;
+-            let y2 = parse_f64(next_field(&mut it, "HATCHES y2")?, "HATCHES y2")? * unit;
++            let x1 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x1")?, "HATCHES x1")? * unit;
++            let y1 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y1")?, "HATCHES y1")? * unit;
++            let x2 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x2")?, "HATCHES x2")? * unit;
++            let y2 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y2")?, "HATCHES y2")? * unit;
+             segments.push((x1, y1, x2, y2));
+         }
+ 
+         let chunk_results: Vec<[Vec<HatchSegment>; REGION_COUNT]> = pool.install(|| {
+             segments
+-                .par_chunks(PARALLEL_HATCH_CHUNK)
++                .par_chunks(parallel_chunk)
+                 .map(|chunk| {
+                     let mut local_buckets: [Vec<HatchSegment>; REGION_COUNT] =
+                         std::array::from_fn(|_| Vec::new());
+                     for &(x1, y1, x2, y2) in chunk {
+                         let bbox = (x1.min(x2), x1.max(x2), y1.min(y2), y1.max(y2));
+-                        let (candidates, candidate_count) =
+-                            candidate_regions_for_bbox(bbox, regions, overlap_mm);
++                        let (candidates, candidate_count) = candidate_regions_for_bbox(bbox, regions, overlap_mm);
+                         for &r_index in &candidates[..candidate_count] {
+                             let region = regions[r_index];
+                             if let Some((cx1, cy1, cx2, cy2)) =
+@@ -984,14 +1062,13 @@
+         }
+     } else {
+         for _ in 0..count {
+-            let x1 = parse_f64(next_field(&mut it, "HATCHES x1")?, "HATCHES x1")? * unit;
+-            let y1 = parse_f64(next_field(&mut it, "HATCHES y1")?, "HATCHES y1")? * unit;
+-            let x2 = parse_f64(next_field(&mut it, "HATCHES x2")?, "HATCHES x2")? * unit;
+-            let y2 = parse_f64(next_field(&mut it, "HATCHES y2")?, "HATCHES y2")? * unit;
++            let x1 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x1")?, "HATCHES x1")? * unit;
++            let y1 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y1")?, "HATCHES y1")? * unit;
++            let x2 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x2")?, "HATCHES x2")? * unit;
++            let y2 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y2")?, "HATCHES y2")? * unit;
+ 
+             let bbox = (x1.min(x2), x1.max(x2), y1.min(y2), y1.max(y2));
+-            let (candidates, candidate_count) =
+-                candidate_regions_for_bbox(bbox, regions, overlap_mm);
++            let (candidates, candidate_count) = candidate_regions_for_bbox(bbox, regions, overlap_mm);
+             for &r_index in &candidates[..candidate_count] {
+                 let region = regions[r_index];
+                 if let Some((cx1, cy1, cx2, cy2)) =
+@@ -1013,7 +1090,7 @@
+         }
+         let id = outs[r_index].next_id;
+         outs[r_index].next_id += 1;
+-        write_hatches(&mut outs[r_index].writer, id, kind, clipped, unit)?;
++        write_hatches_buffered(&mut outs[r_index], id, kind, clipped, unit)?;
+     }
+     Ok(())
+ }
+@@ -1074,6 +1151,7 @@
+     (a.0 - b.0).abs() <= 1e-6 && (a.1 - b.1).abs() <= 1e-6
+ }
+ 
++#[inline]
+ fn clip_segment(
+     x1: f64,
+     y1: f64,
+@@ -1132,8 +1210,8 @@
+     true
+ }
+ 
+-fn write_polyline(
+-    writer: &mut BufWriter<File>,
++fn write_polyline_buffered(
++    out: &mut OutputFile,
+     id: u64,
+     kind: i32,
+     c3_points: &[(f64, f64)],
+@@ -1141,52 +1219,85 @@
+     unit: f64,
+ ) -> Result<(), String> {
+     let inv = 1.0 / unit;
+-    write!(writer, "$$POLYLINE/{id},{kind},{}", c3_points.len())
+-        .map_err(|e| format!("写入 POLYLINE 失败：{e}"))?;
++    let buf = &mut out.line_buffer;
++    buf.clear();
++    buf.extend_from_slice(b"$$POLYLINE/");
++    append_u64(buf, id);
++    buf.push(b',');
++    append_i32(buf, kind);
++    buf.push(b',');
++    append_usize(buf, c3_points.len());
+     for &p in c3_points {
+         let q = local.apply(p);
+-        writer.write_all(b",").map_err(|e| format!("写入 POLYLINE 失败：{e}"))?;
+-        write_cli_number(writer, q.0 * inv).map_err(|e| format!("写入 POLYLINE 失败：{e}"))?;
+-        writer.write_all(b",").map_err(|e| format!("写入 POLYLINE 失败：{e}"))?;
+-        write_cli_number(writer, q.1 * inv).map_err(|e| format!("写入 POLYLINE 失败：{e}"))?;
++        buf.push(b',');
++        append_cli_number(buf, q.0 * inv);
++        buf.push(b',');
++        append_cli_number(buf, q.1 * inv);
+     }
+-    writeln!(writer).map_err(|e| format!("写入 POLYLINE 失败：{e}"))
++    buf.push(b'\n');
++    out.writer.write_all(buf).map_err(|e| format!("写入 POLYLINE 失败：{e}"))
+ }
+ 
+-fn write_hatches(
+-    writer: &mut BufWriter<File>,
++fn write_hatches_buffered(
++    out: &mut OutputFile,
+     id: u64,
+     kind: i32,
+     local_segments: &[(f64, f64, f64, f64)],
+     unit: f64,
+ ) -> Result<(), String> {
+     let inv = 1.0 / unit;
+-    if kind == 0 {
+-        write!(writer, "$$HATCHES/{id},{}", local_segments.len())
+-            .map_err(|e| format!("写入 HATCHES 失败：{e}"))?;
+-    } else {
+-        write!(writer, "$$HATCHES/{id},{kind},{}", local_segments.len())
+-            .map_err(|e| format!("写入 HATCHES 失败：{e}"))?;
++    let buf = &mut out.line_buffer;
++    buf.clear();
++    // 按约 18~24 bytes/坐标预留，减少超长 HATCHES 行扩容次数；容量只增长不收缩，后续复用。
++    let expected = 32usize.saturating_add(local_segments.len().saturating_mul(80));
++    if buf.capacity() < expected {
++        buf.reserve(expected - buf.capacity());
++    }
++    buf.extend_from_slice(b"$$HATCHES/");
++    append_u64(buf, id);
++    buf.push(b',');
++    if kind != 0 {
++        append_i32(buf, kind);
++        buf.push(b',');
+     }
++    append_usize(buf, local_segments.len());
+     for &(x1, y1, x2, y2) in local_segments {
+         for value in [x1 * inv, y1 * inv, x2 * inv, y2 * inv] {
+-            writer.write_all(b",").map_err(|e| format!("写入 HATCHES 失败：{e}"))?;
+-            write_cli_number(writer, value).map_err(|e| format!("写入 HATCHES 失败：{e}"))?;
++            buf.push(b',');
++            append_cli_number(buf, value);
+         }
+     }
+-    writeln!(writer).map_err(|e| format!("写入 HATCHES 失败：{e}"))
++    buf.push(b'\n');
++    out.writer.write_all(buf).map_err(|e| format!("写入 HATCHES 失败：{e}"))
+ }
+ 
+-fn write_cli_number(writer: &mut BufWriter<File>, mut value: f64) -> std::io::Result<()> {
+-    // 热路径：避免 format_cli_number() 每个坐标都分配 String。
+-    // 使用栈上 ryu buffer 直接写入 BufWriter，保持与头部 DIMENSION 相同的 1e-6 取整规则。
++#[inline]
++fn append_cli_number(buf: &mut Vec<u8>, mut value: f64) {
+     if value.abs() < 5e-10 { value = 0.0; }
+     value = (value * 1_000_000.0).round() / 1_000_000.0;
+     if value == -0.0 { value = 0.0; }
+     let mut buffer = ryu::Buffer::new();
+     let text = buffer.format_finite(value);
+     let text = text.strip_suffix(".0").unwrap_or(text);
+-    writer.write_all(text.as_bytes())
++    buf.extend_from_slice(text.as_bytes());
++}
++
++#[inline]
++fn append_u64(buf: &mut Vec<u8>, value: u64) {
++    let mut tmp = itoa::Buffer::new();
++    buf.extend_from_slice(tmp.format(value).as_bytes());
++}
++
++#[inline]
++fn append_usize(buf: &mut Vec<u8>, value: usize) {
++    let mut tmp = itoa::Buffer::new();
++    buf.extend_from_slice(tmp.format(value).as_bytes());
++}
++
++#[inline]
++fn append_i32(buf: &mut Vec<u8>, value: i32) {
++    let mut tmp = itoa::Buffer::new();
++    buf.extend_from_slice(tmp.format(value).as_bytes());
+ }
+ 
+ fn render_name(template: &str, index: usize, source_stem: &str, mirror: &str) -> Result<String, String> {
+@@ -1316,4 +1427,21 @@
+         assert!(parse_units(&["$$UNITS/0".into()]).is_err());
+     }
+ 
++    #[test]
++    fn byte_polyline_parser_matches_ascii_values() {
++        let p = parse_polyline_bytes(b"$$POLYLINE/7,1,3,0,0,1.5,-2,3,4", 2.0).unwrap();
++        assert_eq!(p.kind, 1);
++        assert_eq!(p.points.len(), 3);
++        assert_eq!(p.points[0], (0.0, 0.0));
++        assert_eq!(p.points[1], (3.0, -4.0));
++        assert_eq!(p.points[2], (6.0, 8.0));
++    }
++
++    #[test]
++    fn raw_line_normalization_keeps_non_utf8_bytes() {
++        let raw = [0x24, 0x24, 0x4c, 0x41, 0x42, 0x45, 0x4c, 0x2f, 0x81, 0x82, b'\r', b'\n'];
++        let line = normalize_cli_line_bytes(&raw);
++        assert_eq!(&line[line.len()-2..], &[0x81, 0x82]);
++    }
++
+ }

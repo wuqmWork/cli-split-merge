@@ -1,0 +1,1401 @@
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/.gitignore /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/.gitignore
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/.gitignore	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/.gitignore	2026-09-16 02:24:45.528664803 +0000
+@@ -0,0 +1,11 @@
++node_modules/
++dist/
++src-tauri/target/
++*.tsbuildinfo
++.vscode/
++.idea/
++.DS_Store
++Thumbs.db
++*.log
++*.tmp
++*.part
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/AI_IMPLEMENTATION.md /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/AI_IMPLEMENTATION.md
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/AI_IMPLEMENTATION.md	2026-09-15 16:36:52.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/AI_IMPLEMENTATION.md	2026-09-16 02:25:18.358756199 +0000
+@@ -553,7 +553,7 @@
+ 
+ 默认命名：`{index:03}_{source_stem}_{mirror}.cli`。
+ 
+-前端通过 `split-progress` 监听真实进度。CLI 合并仍保持未实现状态，下一阶段再做。
++前端通过 `split-progress` 监听真实进度。CLI 合并已通过 `merge-progress` 接入真实后端。
+ 
+ ## CLI 合并（已实现）
+ 
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/README.md /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/README.md
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/README.md	2026-09-15 16:36:37.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/README.md	2026-09-16 02:25:18.358450707 +0000
+@@ -35,7 +35,7 @@
+ npm run tauri build
+ ```
+ 
+-> 当前仓库完成的是 UI 与交互层；真正 CLI 分割/合并算法应接入 `src-tauri` Rust 后端命令。
++> 当前仓库已完成 UI、Excel 参数快照、Rust CLI 分割与按层合并核心实现。
+ 
+ 
+ ## 参数 Excel
+@@ -58,7 +58,7 @@
+ - [x] C3 → 24 振镜局部坐标转换
+ - [x] 1～24 物理目录分发
+ - [x] 分割真实进度 / 当前文件 / 运行时间
+-- [ ] CLI 合并
++- [x] CLI 合并（按层合并）
+ 
+ 详见 `SPLIT_IMPLEMENTATION.md`。
+ 
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/REVIEW_FIXES.diff /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/REVIEW_FIXES.diff
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/REVIEW_FIXES.diff	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/REVIEW_FIXES.diff	2026-09-16 02:27:59.009244536 +0000
+@@ -0,0 +1,48 @@
++diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/.gitignore /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/.gitignore
++--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/.gitignore	1970-01-01 00:00:00.000000000 +0000
+++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/.gitignore	2026-09-16 02:24:45.528664803 +0000
++@@ -0,0 +1,11 @@
+++node_modules/
+++dist/
+++src-tauri/target/
+++*.tsbuildinfo
+++.vscode/
+++.idea/
+++.DS_Store
+++Thumbs.db
+++*.log
+++*.tmp
+++*.part
++diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/AI_IMPLEMENTATION.md /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/AI_IMPLEMENTATION.md
++--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/AI_IMPLEMENTATION.md	2026-09-15 16:36:52.000000000 +0000
+++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/AI_IMPLEMENTATION.md	2026-09-16 02:25:18.358756199 +0000
++@@ -553,7 +553,7 @@
++ 
++ 默认命名：`{index:03}_{source_stem}_{mirror}.cli`。
++ 
++-前端通过 `split-progress` 监听真实进度。CLI 合并仍保持未实现状态，下一阶段再做。
+++前端通过 `split-progress` 监听真实进度。CLI 合并已通过 `merge-progress` 接入真实后端。
++ 
++ ## CLI 合并（已实现）
++ 
++diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/README.md /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/README.md
++--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/README.md	2026-09-15 16:36:37.000000000 +0000
+++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/README.md	2026-09-16 02:25:18.358450707 +0000
++@@ -35,7 +35,7 @@
++ npm run tauri build
++ ```
++ 
++-> 当前仓库完成的是 UI 与交互层；真正 CLI 分割/合并算法应接入 `src-tauri` Rust 后端命令。
+++> 当前仓库已完成 UI、Excel 参数快照、Rust CLI 分割与按层合并核心实现。
++ 
++ 
++ ## 参数 Excel
++@@ -58,7 +58,7 @@
++ - [x] C3 → 24 振镜局部坐标转换
++ - [x] 1～24 物理目录分发
++ - [x] 分割真实进度 / 当前文件 / 运行时间
++-- [ ] CLI 合并
+++- [x] CLI 合并（按层合并）
++ 
++ 详见 `SPLIT_IMPLEMENTATION.md`。
++ 
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/REVIEW_FIXES_20260916.md /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/REVIEW_FIXES_20260916.md
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/REVIEW_FIXES_20260916.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/REVIEW_FIXES_20260916.md	2026-09-16 02:25:18.513698316 +0000
+@@ -0,0 +1,43 @@
++# 审查报告修复记录（2026-09-16）
++
++本轮以用户提供的《CLI Split & Merge 项目审查报告》为基线，对 merge-v5 代码进行修复。
++
++## 已修复
++
++### 阻断
++- B1：删除 `HatchSegment` 类型别名上的非法 `#[derive(Debug)]`。
++- B2：补齐 `src-tauri/icons/`，包含 Windows `icon.ico` 与 PNG 图标；`tauri.conf.json` 显式配置 bundle icons。
++
++### 高优先级
++- H1：
++  - 合并：重写 `$$LAYERS/` 为合并后的层并集数量；`$$DIMENSION/` 使用各输入头部包围盒的并集。
++  - 分割：不再复制原全局 XY `$$DIMENSION/`；按对应振镜裁剪区域经过 C3→局部变换后的保守包围盒重写 XY，Z 沿用输入头部。
++- H2：`$$UNITS/1` 与 `$$UNITS/1.0` 解析为数值后按容差比较；缺失按 1.0。
++- H3：接缝采用唯一所有权规则：共享竖边归右侧区域，共享横边归上侧区域；穿越接缝仍分别保留两侧片段。
++- H4：HATCHES 两种格式按精确字段数量判别，歧义/非法格式返回明确错误。
++- H5：分割当前文件失败时统一清理 `.cli.part`；错误信息明确已完成文件数。finalize 阶段也清理尚未 rename 的临时文件。
++- H6：split 输入改为字节 `read_until`，文本采用 lossy 解码，GBK/非法 UTF-8 的 LABEL/注释不再导致整单读取失败；几何数值仍按 ASCII 解析。
++
++### 中优先级
++- M1：POLYLINE/HATCHES 单实体上限从 1 亿降低到 100 万，避免损坏文件触发 GB 级预分配。
++- M2：未知几何行不再静默丢弃，改为透传到输出。
++- M3：前端与后端都对重复输入路径去重/拒绝。
++- M5：Excel 参数加载命令改为 `spawn_blocking`，避免阻塞 UI。
++- M6：恢复参数快照时重新检查源坐标系、有限数值和 `a²+b²≈1`。
++- M7：增加后端全局任务互斥，防止分割/合并并发争用临时文件。（取消令牌未加入本轮 UI。）
++- M8：Rust split 默认写缓冲改为 4 MB，与前端及性能文档一致。
++- M9：split/merge 都检查 `.cli` 扩展名；merge 现在要求 `GEOMETRYSTART/GEOMETRYEND` 成对存在。
++- M10：split 在启动前计算目标路径并阻止输出覆盖任何输入文件。
++
++### 低优先级/工程卫生
++- L1：尚未实现的并行线程、日志、缓存清理、Logo/启动图与深色主题均禁用并标注“即将上线”；关于页版本通过 Tauri API 读取，不再硬编码。
++- L2：补充基础 CSP。
++- L3：新增 `.gitignore`，移除交付目录中的 tsbuildinfo 与生成的 Vite JS/d.ts；同步修正文档中“合并未实现”的矛盾描述。
++- L5：删除无效的 `drop(outputs.iter_mut()...)`；合并进度的 completed 改为“已遇到过的输入文件数”。
++
++## 有意保留 / 待确认
++
++- M4：没有加入“排序”按钮。此前 UI 需求明确要求删除排序控件；当前同层顺序仍按文件选择数组顺序。若后续需要绝对可控顺序，建议使用文件卡片拖拽，而不是恢复单独的“排序”按钮。
++- M7：本轮只实现后端互斥，未增加取消任务按钮/取消令牌。
++- L6：仍固定生成 24 路输出，保留设备 24 路齐套语义。
++- 分割 `$$DIMENSION/` 使用振镜区域的局部保守包围盒，不额外做第二遍扫描求“实际几何最小包围盒”，以避免明显降低分割性能。
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/SPLIT_IMPLEMENTATION.md /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/SPLIT_IMPLEMENTATION.md
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/SPLIT_IMPLEMENTATION.md	2026-09-15 16:24:38.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/SPLIT_IMPLEMENTATION.md	2026-09-16 02:25:18.358626025 +0000
+@@ -10,7 +10,7 @@
+ - Tauri command：`src-tauri/src/lib.rs` → `split_cli_files`
+ - 核心实现：`src-tauri/src/split.rs`
+ 
+-CLI 合并暂未实现，本阶段只完成分割。
++CLI 合并已在 `merge.rs` 中实现；本文仅说明分割模块。
+ 
+ ## 分割流程
+ 
+@@ -175,7 +175,7 @@
+ - 当前输入 CLI 的坐标系固定视为全局 C3。
+ - Excel 参数必须是 `C3 → A0...F3`。
+ - 当前重叠量固定为 `0 mm`。
+-- CLI 合并尚未实现。
++- CLI 合并已实现，详见 `MERGE_IMPLEMENTATION.md`。
+ 
+ ## v4 性能优化
+ 
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src/App.tsx /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src/App.tsx
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src/App.tsx	2026-09-15 16:36:37.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src/App.tsx	2026-09-16 02:23:08.443993417 +0000
+@@ -20,7 +20,6 @@
+ import { isTauriRuntime, loadParameterExcel, loadSavedParameterSnapshot, mergeCliFiles, onMergeProgress, onSplitProgress, splitCliFiles } from './backend';
+ import type { Page, SavedParameterSnapshot, SelectedCliFile, SettingsState, TaskProgress } from './types';
+ 
+-const PARAM_STORAGE_KEY = 'cli-split-merge.parameter-snapshot.v1';
+ const SETTINGS_STORAGE_KEY = 'cli-split-merge.settings.v1';
+ const OUTPUT_STORAGE_KEY = 'cli-split-merge.output-dir.v1';
+ 
+@@ -45,7 +44,7 @@
+   const [page, setPage] = useState<Page>('split');
+   const [splitFiles, setSplitFiles] = useState<SelectedCliFile[]>([]);
+   const [mergeFiles, setMergeFiles] = useState<SelectedCliFile[]>([]);
+-  const [parameter, setParameter] = useState<SavedParameterSnapshot | null>(() => loadJson(PARAM_STORAGE_KEY));
++  const [parameter, setParameter] = useState<SavedParameterSnapshot | null>(null);
+   const [splitOutput, setSplitOutput] = useState(() => localStorage.getItem(OUTPUT_STORAGE_KEY) || 'D:\\output');
+   const [mergeOutput, setMergeOutput] = useState('D:\\output\\merged.cli');
+   const [progress, setProgress] = useState<TaskProgress>(() => createInitialProgress());
+@@ -63,7 +62,6 @@
+       .then((snapshot) => {
+         if (snapshot) {
+           setParameter(snapshot);
+-          localStorage.setItem(PARAM_STORAGE_KEY, JSON.stringify(snapshot));
+         }
+       })
+       .catch((error) => console.error('恢复参数快照失败', error));
+@@ -75,7 +73,8 @@
+   async function chooseCliFiles() {
+     const tauriFiles = await pickCliFiles();
+     if (tauriFiles) {
+-      page === 'split' ? setSplitFiles(tauriFiles) : setMergeFiles(tauriFiles);
++      const unique = dedupeFiles(tauriFiles);
++      page === 'split' ? setSplitFiles(unique) : setMergeFiles(unique);
+       return;
+     }
+     const input = document.createElement('input');
+@@ -83,7 +82,7 @@
+     input.accept = '.cli';
+     input.multiple = true;
+     input.onchange = () => {
+-      const files = Array.from(input.files ?? []).map((file) => ({ name: file.name, path: file.name, size: file.size }));
++      const files = dedupeFiles(Array.from(input.files ?? []).map((file) => ({ name: file.name, path: file.name, size: file.size })));
+       page === 'split' ? setSplitFiles(files) : setMergeFiles(files);
+     };
+     input.click();
+@@ -95,8 +94,6 @@
+       try {
+         const snapshot = await loadParameterExcel(tauriPath);
+         setParameter(snapshot);
+-        // 浏览器缓存只作为 UI 恢复的兜底；真正的完整快照由 Rust 写入程序数据目录。
+-        localStorage.setItem(PARAM_STORAGE_KEY, JSON.stringify(snapshot));
+       } catch (error) {
+         window.alert(`参数文件加载失败：${String(error)}`);
+       }
+@@ -448,6 +445,16 @@
+   return <div className="my-5 flex justify-center"><button className="primary-action disabled:cursor-not-allowed disabled:opacity-60" onClick={onClick} disabled={disabled}><Play size={19} fill="currentColor" strokeWidth={1.7} />{label}</button></div>;
+ }
+ 
++function dedupeFiles(files: SelectedCliFile[]) {
++  const seen = new Set<string>();
++  return files.filter((file) => {
++    const key = file.path.replace(/\\/g, '/').toLocaleLowerCase();
++    if (seen.has(key)) return false;
++    seen.add(key);
++    return true;
++  });
++}
++
+ function loadJson(key: string) {
+   try {
+     const raw = localStorage.getItem(key);
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src/SettingsModal.tsx /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src/SettingsModal.tsx
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src/SettingsModal.tsx	2026-09-15 15:12:46.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src/SettingsModal.tsx	2026-09-16 02:23:42.873972636 +0000
+@@ -1,5 +1,6 @@
+-import { useState, type ReactNode } from 'react';
++import { useEffect, useState, type ReactNode } from 'react';
+ import { X, FolderOpen, Trash2, Gauge, Image, Info, SlidersHorizontal, Database } from 'lucide-react';
++import { getVersion } from '@tauri-apps/api/app';
+ import type { SettingsState } from './types';
+ 
+ type Tab = 'general' | 'appearance' | 'performance' | 'logs' | 'about';
+@@ -14,6 +15,8 @@
+ 
+ export default function SettingsModal({ settings, onChange, onClose }: { settings: SettingsState; onChange: (next: SettingsState) => void; onClose: () => void }) {
+   const [tab, setTab] = useState<Tab>('general');
++  const [version, setVersion] = useState('—');
++  useEffect(() => { getVersion().then(setVersion).catch(() => setVersion('—')); }, []);
+   const patch = (value: Partial<SettingsState>) => onChange({ ...settings, ...value });
+ 
+   return (
+@@ -51,38 +54,36 @@
+             )}
+             {tab === 'appearance' && (
+               <div className="settings-stack">
+-                <SettingRow title="主题" description="选择程序外观。">
+-                  <select className="settings-input w-48" value={settings.appearance} onChange={(e) => patch({ appearance: e.target.value as SettingsState['appearance'] })}>
+-                    <option value="system">跟随系统</option>
++                <SettingRow title="主题" description="深色模式即将上线；当前固定浅色。">
++                  <select className="settings-input w-48 opacity-50" value="light" disabled>
+                     <option value="light">浅色</option>
+-                    <option value="dark">深色</option>
+                   </select>
+                 </SettingRow>
+-                <SettingRow title="程序 Logo" description="预留 Logo 图片设置入口。"><button className="secondary-button"><FolderOpen size={17} />选择图片</button></SettingRow>
+-                <SettingRow title="启动画面" description="预留启动图片设置入口。"><button className="secondary-button"><FolderOpen size={17} />选择图片</button></SettingRow>
++                <SettingRow title="程序 Logo" description="即将上线。"><button className="secondary-button opacity-50" disabled><FolderOpen size={17} />选择图片</button></SettingRow>
++                <SettingRow title="启动画面" description="即将上线。"><button className="secondary-button opacity-50" disabled><FolderOpen size={17} />选择图片</button></SettingRow>
+               </div>
+             )}
+             {tab === 'performance' && (
+               <div className="settings-stack">
+-                <SettingRow title="并行处理" description="允许 Rust 后端并行处理多个任务块。"><Toggle checked={settings.parallel} onChange={(value) => patch({ parallel: value })} /></SettingRow>
+-                <SettingRow title="线程数" description="0 表示自动使用合理线程数。"><input type="number" min={0} max={128} className="settings-input w-32" value={settings.workerCount} onChange={(e) => patch({ workerCount: Number(e.target.value) || 0 })} /></SettingRow>
++                <SettingRow title="并行处理" description="即将上线；当前后端采用单任务流式处理。"><button className="secondary-button opacity-50" disabled>即将上线</button></SettingRow>
++                <SettingRow title="线程数" description="即将上线；当前不生效。"><input type="number" min={0} max={128} className="settings-input w-32 opacity-50" value={settings.workerCount} disabled readOnly /></SettingRow>
+                 <SettingRow title="读缓冲" description="CLI 输入读取缓冲大小。"><NumberWithUnit value={settings.readBufferMb} unit="MB" onChange={(value) => patch({ readBufferMb: value })} /></SettingRow>
+                 <SettingRow title="写缓冲" description="CLI 输出写入缓冲大小。"><NumberWithUnit value={settings.writeBufferMb} unit="MB" onChange={(value) => patch({ writeBufferMb: value })} /></SettingRow>
+               </div>
+             )}
+             {tab === 'logs' && (
+               <div className="settings-stack">
+-                <SettingRow title="日志级别" description="控制程序记录信息的详细程度。"><select className="settings-input w-40" value={settings.logLevel} onChange={(e) => patch({ logLevel: e.target.value as SettingsState['logLevel'] })}><option value="error">错误</option><option value="warn">警告</option><option value="info">信息</option><option value="debug">调试</option></select></SettingRow>
+-                <SettingRow title="日志保留天数" description="超过保留期的旧日志可自动清理。"><NumberWithUnit value={settings.logRetentionDays} unit="天" onChange={(value) => patch({ logRetentionDays: value })} /></SettingRow>
+-                <SettingRow title="退出时清理缓存" description="退出程序时自动移除临时缓存。"><Toggle checked={settings.autoClearCache} onChange={(value) => patch({ autoClearCache: value })} /></SettingRow>
+-                <SettingRow title="清理缓存" description="删除程序产生的临时文件，不影响参数快照。"><button className="secondary-button"><Trash2 size={17} />清理缓存</button></SettingRow>
++                <SettingRow title="日志级别" description="日志子系统即将上线。"><select className="settings-input w-40 opacity-50" value={settings.logLevel} disabled><option value="error">错误</option><option value="warn">警告</option><option value="info">信息</option><option value="debug">调试</option></select></SettingRow>
++                <SettingRow title="日志保留天数" description="即将上线。"><div className="opacity-50"><NumberWithUnit value={settings.logRetentionDays} unit="天" onChange={() => {}} /></div></SettingRow>
++                <SettingRow title="退出时清理缓存" description="即将上线。"><button className="secondary-button opacity-50" disabled>即将上线</button></SettingRow>
++                <SettingRow title="清理缓存" description="即将上线。"><button className="secondary-button opacity-50" disabled><Trash2 size={17} />清理缓存</button></SettingRow>
+               </div>
+             )}
+             {tab === 'about' && (
+               <div className="flex h-full flex-col items-center justify-center text-center">
+                 <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 text-blue-600"><Info size={34} strokeWidth={1.8} /></div>
+                 <div className="text-2xl font-semibold text-slate-900">CLI Split & Merge</div>
+-                <div className="mt-2 text-sm text-slate-500">版本 v1.0.0</div>
++                <div className="mt-2 text-sm text-slate-500">版本 v{version}</div>
+                 <div className="mt-8 grid grid-cols-2 gap-x-12 gap-y-3 text-left text-sm text-slate-600">
+                   <span>桌面框架</span><span className="font-medium text-slate-800">Tauri 2</span>
+                   <span>前端</span><span className="font-medium text-slate-800">React + TypeScript + Tailwind CSS</span>
+Binary files /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/icons/128x128.png and /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/icons/128x128.png differ
+Binary files /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/icons/128x128@2x.png and /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/icons/128x128@2x.png differ
+Binary files /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/icons/32x32.png and /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/icons/32x32.png differ
+Binary files /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/icons/icon.ico and /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/icons/icon.ico differ
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/src/lib.rs /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/src/lib.rs
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/src/lib.rs	2026-09-15 16:36:36.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/src/lib.rs	2026-09-16 02:22:56.148287812 +0000
+@@ -1,15 +1,36 @@
++mod merge;
+ mod parameter;
+ mod split;
+-mod merge;
+ 
++use merge::{MergeRequest, MergeResult};
+ use parameter::ParameterSnapshotDto;
+ use split::{SplitRequest, SplitResult};
+-use merge::{MergeRequest, MergeResult};
++use std::sync::atomic::{AtomicBool, Ordering};
+ use tauri::AppHandle;
+ 
++static TASK_RUNNING: AtomicBool = AtomicBool::new(false);
++
++struct TaskGuard;
++impl TaskGuard {
++    fn acquire() -> Result<Self, String> {
++        TASK_RUNNING
++            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
++            .map(|_| Self)
++            .map_err(|_| "已有 CLI 任务正在运行，请等待当前任务完成。".to_string())
++    }
++}
++impl Drop for TaskGuard {
++    fn drop(&mut self) {
++        TASK_RUNNING.store(false, Ordering::Release);
++    }
++}
++
+ #[tauri::command]
+-fn load_parameter_excel(app: AppHandle, path: String) -> Result<ParameterSnapshotDto, String> {
+-    parameter::load_parameter_excel(&app, &path)
++async fn load_parameter_excel(app: AppHandle, path: String) -> Result<ParameterSnapshotDto, String> {
++    let worker_app = app.clone();
++    tauri::async_runtime::spawn_blocking(move || parameter::load_parameter_excel(&worker_app, &path))
++        .await
++        .map_err(|e| format!("参数加载任务异常退出：{e}"))?
+ }
+ 
+ #[tauri::command]
+@@ -19,6 +40,7 @@
+ 
+ #[tauri::command]
+ async fn split_cli_files(app: AppHandle, request: SplitRequest) -> Result<SplitResult, String> {
++    let _guard = TaskGuard::acquire()?;
+     let worker_app = app.clone();
+     tauri::async_runtime::spawn_blocking(move || split::split_cli_files(&worker_app, request))
+         .await
+@@ -27,6 +49,7 @@
+ 
+ #[tauri::command]
+ async fn merge_cli_files(app: AppHandle, request: MergeRequest) -> Result<MergeResult, String> {
++    let _guard = TaskGuard::acquire()?;
+     let worker_app = app.clone();
+     tauri::async_runtime::spawn_blocking(move || merge::merge_cli_files(&worker_app, request))
+         .await
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/src/merge.rs /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/src/merge.rs
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/src/merge.rs	2026-09-15 16:36:36.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/src/merge.rs	2026-09-16 02:27:33.112611289 +0000
+@@ -1,7 +1,7 @@
+ use serde::{Deserialize, Serialize};
+ use std::{
+     cmp::Ordering,
+-    collections::BTreeMap,
++    collections::{BTreeMap, HashSet},
+     fs::{self, File, OpenOptions},
+     io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+     path::{Path, PathBuf},
+@@ -11,6 +11,7 @@
+ 
+ const EVENT_NAME: &str = "merge-progress";
+ const DEFAULT_BUFFER_MB: usize = 16;
++const UNIT_EPS: f64 = 1e-12;
+ 
+ #[derive(Debug, Clone, Deserialize)]
+ #[serde(rename_all = "camelCase")]
+@@ -49,12 +50,36 @@
+     body_end: u64,
+ }
+ 
++#[derive(Debug, Clone, Copy)]
++struct Dimension {
++    xmin: f64,
++    ymin: f64,
++    zmin: f64,
++    xmax: f64,
++    ymax: f64,
++    zmax: f64,
++}
++
++impl Dimension {
++    fn union(self, other: Self) -> Self {
++        Self {
++            xmin: self.xmin.min(other.xmin),
++            ymin: self.ymin.min(other.ymin),
++            zmin: self.zmin.min(other.zmin),
++            xmax: self.xmax.max(other.xmax),
++            ymax: self.ymax.max(other.ymax),
++            zmax: self.zmax.max(other.zmax),
++        }
++    }
++}
++
+ #[derive(Debug)]
+ struct IndexedFile {
+     path: PathBuf,
+     header: Vec<u8>,
+     preamble: Vec<u8>,
+-    unit_line: Option<String>,
++    unit: f64,
++    dimension: Option<Dimension>,
+     layers: Vec<LayerSpan>,
+ }
+ 
+@@ -66,9 +91,7 @@
+     fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+ }
+ impl Ord for LayerKey {
+-    fn cmp(&self, other: &Self) -> Ordering {
+-        self.0.total_cmp(&other.0)
+-    }
++    fn cmp(&self, other: &Self) -> Ordering { self.0.total_cmp(&other.0) }
+ }
+ 
+ pub fn merge_cli_files(app: &AppHandle, request: MergeRequest) -> Result<MergeResult, String> {
+@@ -92,7 +115,7 @@
+     let write_capacity = mb_capacity(request.write_buffer_mb.unwrap_or(DEFAULT_BUFFER_MB));
+     let total = request.input_files.len();
+ 
+-    // 第一遍只建立每层的字节偏移索引，不把整个 CLI 或整层几何加载进内存。
++    // 第一遍只建立每层字节偏移索引，不把整个 CLI 或整层几何加载进内存。
+     let mut indexed = Vec::with_capacity(total);
+     for (i, input) in request.input_files.iter().enumerate() {
+         let path = PathBuf::from(input);
+@@ -114,11 +137,14 @@
+         return Err("输入 CLI 中没有找到 $$LAYER/ 层数据。".to_string());
+     }
+ 
+-    // 同层内严格保持用户选择文件的先后顺序。
++    // 同层内保持用户选择文件的先后顺序。
+     for spans in by_layer.values_mut() {
+         spans.sort_by_key(|s| s.input_index);
+     }
+ 
++    let merged_dimension = indexed.iter().filter_map(|f| f.dimension).reduce(Dimension::union);
++    let header = rewrite_header(&indexed[0].header, layer_count, merged_dimension)?;
++
+     let temp_path = temp_path_for(&output_path);
+     if temp_path.exists() {
+         let _ = fs::remove_file(&temp_path);
+@@ -133,31 +159,29 @@
+             .map_err(|e| format!("无法创建临时输出文件 {}：{e}", temp_path.display()))?;
+         let mut writer = BufWriter::with_capacity(write_capacity, out_file);
+ 
+-        let first = &indexed[0];
+-        writer.write_all(&first.header).map_err(io_err("写入 CLI 头部"))?;
+-        if !ends_with_newline(&first.header) {
++        writer.write_all(&header).map_err(io_err("写入 CLI 头部"))?;
++        if !ends_with_newline(&header) {
+             writer.write_all(b"\n").map_err(io_err("写入 CLI 头部换行"))?;
+         }
+         writer.write_all(b"$$GEOMETRYSTART\n").map_err(io_err("写入 GEOMETRYSTART"))?;
+-        if !first.preamble.is_empty() {
+-            writer.write_all(&first.preamble).map_err(io_err("写入几何前导内容"))?;
+-            if !ends_with_newline(&first.preamble) {
++        if !indexed[0].preamble.is_empty() {
++            writer.write_all(&indexed[0].preamble).map_err(io_err("写入几何前导内容"))?;
++            if !ends_with_newline(&indexed[0].preamble) {
+                 writer.write_all(b"\n").map_err(io_err("写入前导换行"))?;
+             }
+         }
+ 
+-        // 为每个输入只保持一个 File 句柄，按已记录的偏移 seek + stream copy。
+-        let mut sources: Vec<File> = indexed.iter().map(|f| {
+-            File::open(&f.path).map_err(|e| format!("无法重新打开 CLI {}：{e}", f.path.display()))
+-        }).collect::<Result<_, _>>()?;
++        let mut sources: Vec<File> = indexed
++            .iter()
++            .map(|f| File::open(&f.path).map_err(|e| format!("无法重新打开 CLI {}：{e}", f.path.display())))
++            .collect::<Result<_, _>>()?;
+ 
+         let mut copy_buffer = vec![0_u8; 1024 * 1024];
+-        let mut last_input = usize::MAX;
+-        let mut completed_files = 0usize;
+         let layer_total = layer_count.max(1);
++        let mut seen_inputs = vec![false; total];
++        let mut completed_files = 0usize;
+ 
+         for (layer_i, (_key, spans)) in by_layer.iter().enumerate() {
+-            // 每个合并层只写一次 LAYER 标记，避免多个源文件重复层头。
+             let layer_line = &spans[0].layer_line;
+             writer.write_all(layer_line).map_err(io_err("写入 LAYER"))?;
+             if !ends_with_newline(layer_line) {
+@@ -165,13 +189,13 @@
+             }
+ 
+             for span in spans {
+-                if span.input_index != last_input {
+-                    last_input = span.input_index;
+-                    let current_name = display_name(&indexed[span.input_index].path);
+-                    completed_files = completed_files.max(span.input_index);
+-                    let p = 50.0 + (layer_i as f64 / layer_total as f64) * 50.0;
+-                    emit_progress(app, p, completed_files, total, &current_name, "正在按层合并");
++                if !seen_inputs[span.input_index] {
++                    seen_inputs[span.input_index] = true;
++                    completed_files += 1;
+                 }
++                let current_name = display_name(&indexed[span.input_index].path);
++                let p = 50.0 + (layer_i as f64 / layer_total as f64) * 50.0;
++                emit_progress(app, p, completed_files.min(total), total, &current_name, "正在按层合并");
+                 copy_range(
+                     &mut sources[span.input_index],
+                     &mut writer,
+@@ -192,15 +216,34 @@
+         return Err(e);
+     }
+ 
+-    // 原子式落盘：先完整写 .tmp，再替换最终文件，避免失败时留下半个 CLI。
+-    if output_path.exists() {
+-        fs::remove_file(&output_path)
+-            .map_err(|e| format!("无法覆盖已有输出文件 {}：{e}", output_path.display()))?;
++    let backup_path = output_path.with_extension("cli.replace.bak");
++    if backup_path.exists() {
++        let _ = fs::remove_file(&backup_path);
++    }
++    let had_existing = output_path.exists();
++    if had_existing {
++        fs::rename(&output_path, &backup_path)
++            .map_err(|e| format!("无法准备覆盖已有输出文件 {}：{e}", output_path.display()))?;
++    }
++    if let Err(e) = fs::rename(&temp_path, &output_path) {
++        if had_existing && backup_path.exists() {
++            let _ = fs::rename(&backup_path, &output_path);
++        }
++        let _ = fs::remove_file(&temp_path);
++        return Err(format!("无法完成输出文件 {}：{e}", output_path.display()));
++    }
++    if backup_path.exists() {
++        let _ = fs::remove_file(&backup_path);
+     }
+-    fs::rename(&temp_path, &output_path)
+-        .map_err(|e| format!("无法完成输出文件 {}：{e}", output_path.display()))?;
+ 
+-    emit_progress(app, 100.0, total, total, output_path.file_name().and_then(|s| s.to_str()).unwrap_or("merged.cli"), "合并完成");
++    emit_progress(
++        app,
++        100.0,
++        total,
++        total,
++        output_path.file_name().and_then(|s| s.to_str()).unwrap_or("merged.cli"),
++        "合并完成",
++    );
+ 
+     Ok(MergeResult {
+         input_count: total,
+@@ -220,8 +263,10 @@
+     let mut line = Vec::with_capacity(4096);
+     let mut header = Vec::new();
+     let mut preamble = Vec::new();
+-    let mut unit_line = None;
++    let mut unit = 1.0_f64;
++    let mut dimension = None;
+     let mut geometry_started = false;
++    let mut geometry_finished = false;
+     let mut saw_layer = false;
+     let mut current: Option<LayerSpan> = None;
+     let mut layers = Vec::new();
+@@ -241,7 +286,9 @@
+                 continue;
+             }
+             if starts_ascii_ci(token, b"$$UNITS/") {
+-                unit_line = Some(String::from_utf8_lossy(token).to_ascii_uppercase());
++                unit = parse_units_line(token)?;
++            } else if starts_ascii_ci(token, b"$$DIMENSION/") {
++                dimension = Some(parse_dimension_line(token)?);
+             }
+             header.extend_from_slice(&line);
+             continue;
+@@ -252,7 +299,8 @@
+                 span.body_end = line_start;
+                 layers.push(span);
+             }
+-            return Ok(IndexedFile { path: path.to_path_buf(), header, preamble, unit_line, layers });
++            geometry_finished = true;
++            break;
+         }
+ 
+         if starts_ascii_ci(token, b"$$LAYER/") {
+@@ -281,11 +329,11 @@
+     if !geometry_started {
+         return Err(format!("CLI 缺少 $$GEOMETRYSTART：{}", path.display()));
+     }
+-    if let Some(mut span) = current.take() {
+-        span.body_end = pos;
+-        layers.push(span);
++    if !geometry_finished {
++        return Err(format!("CLI 缺少 $$GEOMETRYEND：{}", path.display()));
+     }
+-    Ok(IndexedFile { path: path.to_path_buf(), header, preamble, unit_line, layers })
++
++    Ok(IndexedFile { path: path.to_path_buf(), header, preamble, unit, dimension, layers })
+ }
+ 
+ fn validate_request(request: &MergeRequest) -> Result<(), String> {
+@@ -295,28 +343,129 @@
+     if request.output_file.trim().is_empty() {
+         return Err("请选择输出文件。".to_string());
+     }
++
++    let mut seen = HashSet::new();
+     for input in &request.input_files {
+-        let ext = Path::new(input).extension().and_then(|e| e.to_str()).unwrap_or("");
++        let path = Path::new(input);
++        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+         if !ext.eq_ignore_ascii_case("cli") {
+             return Err(format!("仅支持 .cli 输入文件：{input}"));
+         }
++        let normalized = absolute_for_compare(path);
++        if !seen.insert(normalized.clone()) {
++            return Err(format!("输入文件重复：{}", normalized.display()));
++        }
+     }
+     Ok(())
+ }
+ 
+ fn validate_compatible(files: &[IndexedFile]) -> Result<(), String> {
+-    let expected = files.first().and_then(|f| f.unit_line.as_deref());
++    let expected = files.first().map(|f| f.unit).unwrap_or(1.0);
+     for file in files.iter().skip(1) {
+-        if file.unit_line.as_deref() != expected {
++        let scale = expected.abs().max(file.unit.abs()).max(1.0);
++        if (file.unit - expected).abs() > UNIT_EPS * scale {
+             return Err(format!(
+-                "CLI 单位不一致，无法直接按层合并：{}",
+-                file.path.display()
++                "CLI 单位不一致，无法直接按层合并：{}（期望 {}，实际 {}）",
++                file.path.display(), expected, file.unit
+             ));
+         }
+     }
+     Ok(())
+ }
+ 
++fn rewrite_header(header: &[u8], layer_count: usize, dimension: Option<Dimension>) -> Result<Vec<u8>, String> {
++    let mut reader = BufReader::new(header);
++    let mut line = Vec::new();
++    let mut out = Vec::with_capacity(header.len() + 128);
++    let mut saw_layers = false;
++    let mut saw_dimension = false;
++    let mut inserted_missing = false;
++
++    loop {
++        line.clear();
++        let n = reader.read_until(b'\n', &mut line).map_err(|e| format!("重写 CLI 头部失败：{e}"))?;
++        if n == 0 { break; }
++        let token = trim_ascii(&line);
++
++        // 若原头部缺少元数据，必须在 HEADEREND 之前补入，不能追加到头部结束标记之后。
++        if eq_ascii_ci(token, b"$$HEADEREND") && !inserted_missing {
++            if !saw_layers {
++                writeln!(&mut out, "$$LAYERS/{layer_count}").map_err(|e| format!("写入 LAYERS 失败：{e}"))?;
++                saw_layers = true;
++            }
++            if !saw_dimension {
++                if let Some(d) = dimension {
++                    write_dimension_line(&mut out, d)?;
++                    saw_dimension = true;
++                }
++            }
++            inserted_missing = true;
++        }
++
++        if starts_ascii_ci(token, b"$$LAYERS/") {
++            writeln!(&mut out, "$$LAYERS/{layer_count}").map_err(|e| format!("重写 LAYERS 失败：{e}"))?;
++            saw_layers = true;
++        } else if starts_ascii_ci(token, b"$$DIMENSION/") {
++            if let Some(d) = dimension {
++                write_dimension_line(&mut out, d)?;
++            } else {
++                out.extend_from_slice(&line);
++            }
++            saw_dimension = true;
++        } else {
++            out.extend_from_slice(&line);
++        }
++    }
++
++    if !inserted_missing {
++        if !saw_layers {
++            writeln!(&mut out, "$$LAYERS/{layer_count}").map_err(|e| format!("写入 LAYERS 失败：{e}"))?;
++        }
++        if !saw_dimension {
++            if let Some(d) = dimension {
++                write_dimension_line(&mut out, d)?;
++            }
++        }
++    }
++    Ok(out)
++}
++
++fn write_dimension_line(out: &mut Vec<u8>, d: Dimension) -> Result<(), String> {
++    writeln!(out, "$$DIMENSION/{},{},{},{},{},{}", fmt_num(d.xmin), fmt_num(d.ymin), fmt_num(d.zmin), fmt_num(d.xmax), fmt_num(d.ymax), fmt_num(d.zmax))
++        .map_err(|e| format!("重写 DIMENSION 失败：{e}"))
++}
++
++fn fmt_num(v: f64) -> String {
++    let mut buffer = ryu::Buffer::new();
++    buffer.format_finite(v).to_string()
++}
++
++fn parse_units_line(token: &[u8]) -> Result<f64, String> {
++    let slash = token.iter().position(|&b| b == b'/').ok_or_else(|| "UNITS 行格式错误".to_string())?;
++    let value = trim_ascii(&token[slash + 1..]);
++    if value.is_empty() { return Ok(1.0); }
++    let parsed = lexical_core::parse::<f64>(value)
++        .map_err(|_| format!("无法解析 UNITS：{}", String::from_utf8_lossy(value)))?;
++    if !parsed.is_finite() || parsed <= 0.0 {
++        return Err(format!("UNITS 必须为正有限数值：{}", String::from_utf8_lossy(value)));
++    }
++    Ok(parsed)
++}
++
++fn parse_dimension_line(token: &[u8]) -> Result<Dimension, String> {
++    let slash = token.iter().position(|&b| b == b'/').ok_or_else(|| "DIMENSION 行格式错误".to_string())?;
++    let payload = trim_ascii(&token[slash + 1..]);
++    let text = std::str::from_utf8(payload).map_err(|_| "DIMENSION 不是有效 ASCII 数值".to_string())?;
++    let values: Vec<f64> = text
++        .split(',')
++        .map(|v| lexical_core::parse::<f64>(v.trim().as_bytes()).map_err(|_| format!("无法解析 DIMENSION 数值：{v}")))
++        .collect::<Result<_, _>>()?;
++    if values.len() != 6 || values.iter().any(|v| !v.is_finite()) {
++        return Err("DIMENSION 必须包含 6 个有限数值".to_string());
++    }
++    Ok(Dimension { xmin: values[0], ymin: values[1], zmin: values[2], xmax: values[3], ymax: values[4], zmax: values[5] })
++}
++
+ fn parse_layer_value(token: &[u8]) -> Result<f64, String> {
+     let slash = token.iter().position(|&b| b == b'/')
+         .ok_or_else(|| "LAYER 行格式错误".to_string())?;
+@@ -369,9 +518,7 @@
+     path.file_name().and_then(|s| s.to_str()).unwrap_or_else(|| path.to_str().unwrap_or("CLI")).to_string()
+ }
+ 
+-fn mb_capacity(mb: usize) -> usize {
+-    mb.clamp(1, 256) * 1024 * 1024
+-}
++fn mb_capacity(mb: usize) -> usize { mb.clamp(1, 256) * 1024 * 1024 }
+ 
+ fn ends_with_newline(bytes: &[u8]) -> bool {
+     bytes.last().is_some_and(|b| *b == b'\n' || *b == b'\r')
+@@ -418,4 +565,33 @@
+         assert!(normalize_output_path("abc").to_string_lossy().ends_with("abc.cli"));
+         assert!(normalize_output_path("abc.CLI").to_string_lossy().ends_with("abc.CLI"));
+     }
++
++    #[test]
++    fn units_compare_numerically() {
++        assert_eq!(parse_units_line(b"$$UNITS/1").unwrap(), parse_units_line(b"$$UNITS/1.0").unwrap());
++    }
++
++    #[test]
++    fn dimension_union_is_correct() {
++        let a = Dimension { xmin: 0.0, ymin: 1.0, zmin: 2.0, xmax: 3.0, ymax: 4.0, zmax: 5.0 };
++        let b = Dimension { xmin: -1.0, ymin: 2.0, zmin: 0.0, xmax: 10.0, ymax: 3.0, zmax: 8.0 };
++        let u = a.union(b);
++        assert_eq!((u.xmin, u.ymin, u.zmin, u.xmax, u.ymax, u.zmax), (-1.0, 1.0, 0.0, 10.0, 4.0, 8.0));
++    }
++
++    #[test]
++    fn rewrites_layers_before_header_end() {
++        let header = b"$$HEADERSTART
++$$UNITS/1
++$$LAYERS/2
++$$DIMENSION/0,0,0,1,1,1
++$$HEADEREND
++";
++        let d = Dimension { xmin: -2.0, ymin: -3.0, zmin: 0.0, xmax: 4.0, ymax: 5.0, zmax: 6.0 };
++        let out = rewrite_header(header, 7, Some(d)).unwrap();
++        let text = String::from_utf8(out).unwrap();
++        assert!(text.contains("$$LAYERS/7"));
++        assert!(text.contains("$$DIMENSION/-2,-3,0,4,5,6"));
++        assert!(text.find("$$LAYERS/7").unwrap() < text.find("$$HEADEREND").unwrap());
++    }
+ }
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/src/parameter.rs /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/src/parameter.rs
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/src/parameter.rs	2026-09-15 15:35:34.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/src/parameter.rs	2026-09-16 02:26:42.642300935 +0000
+@@ -158,6 +158,12 @@
+         return Err("参数快照不完整：必须包含 24 个振镜变换".to_string());
+     }
+ 
++    for (index, transform) in snapshot.transforms.iter().enumerate() {
++        if !transform.source.trim().eq_ignore_ascii_case("C3") {
++            return Err(format!("参数快照第 {} 条源坐标系不是 C3", index + 1));
++        }
++        validate_transform(transform, index + 1)?;
++    }
+     let targets: BTreeSet<String> = snapshot.transforms.iter().map(|v| v.target.clone()).collect();
+     validate_mirror_set(targets)?;
+     Ok(Some(snapshot))
+@@ -299,3 +305,48 @@
+ pub fn snapshot_file_for_test(base: &Path) -> PathBuf {
+     base.join(SNAPSHOT_FILE)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn identity(target: &str) -> MirrorTransform {
++        MirrorTransform {
++            category: "test".into(),
++            transform_name: format!("C3->{target}"),
++            source: "C3".into(),
++            target: target.into(),
++            point_count: 4,
++            a: 1.0,
++            b: 0.0,
++            tx: 0.0,
++            ty: 0.0,
++            rotation_deg: 0.0,
++            matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
++        }
++    }
++
++    #[test]
++    fn mirror_set_requires_all_24() {
++        let all: BTreeSet<String> = ["A", "B", "C", "D", "E", "F"]
++            .into_iter()
++            .flat_map(|g| (0..=3).map(move |i| format!("{g}{i}")))
++            .collect();
++        assert!(validate_mirror_set(all).is_ok());
++
++        let mut missing: BTreeSet<String> = ["A", "B", "C", "D", "E", "F"]
++            .into_iter()
++            .flat_map(|g| (0..=3).map(move |i| format!("{g}{i}")))
++            .collect();
++        missing.remove("F3");
++        assert!(validate_mirror_set(missing).is_err());
++    }
++
++    #[test]
++    fn transform_norm_is_revalidated() {
++        assert!(validate_transform(&identity("C3"), 1).is_ok());
++        let mut broken = identity("C3");
++        broken.a = 2.0;
++        assert!(validate_transform(&broken, 1).is_err());
++    }
++}
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/src/split.rs /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/src/split.rs
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/src/split.rs	2026-09-15 16:23:38.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/src/split.rs	2026-09-16 02:27:21.941415432 +0000
+@@ -1,6 +1,7 @@
+ use crate::parameter::MirrorTransform;
+ use serde::{Deserialize, Serialize};
+ use std::{
++    collections::HashSet,
+     fs::{self, File},
+     io::{BufRead, BufReader, BufWriter, Write},
+     path::{Path, PathBuf},
+@@ -111,7 +112,6 @@
+     points: Vec<(f64, f64)>,
+ }
+ 
+-#[derive(Debug)]
+ type HatchSegment = (f64, f64, f64, f64);
+ 
+ const X_MIN: f64 = -1430.0;
+@@ -129,6 +129,7 @@
+         .map_err(|e| format!("无法创建输出目录 {}：{e}", output_root.display()))?;
+ 
+     let transform_table = build_transform_table(&request.transforms)?;
++    validate_output_collisions(&request, &output_root)?;
+     for region in REGIONS {
+         fs::create_dir_all(output_root.join(region.folder_id.to_string()))
+             .map_err(|e| format!("无法创建输出目录 {}：{e}", region.folder_id))?;
+@@ -136,7 +137,7 @@
+ 
+     let total = request.input_files.len();
+     let read_capacity = mb_capacity(request.read_buffer_mb.unwrap_or(16), 16);
+-    let write_capacity = mb_capacity(request.write_buffer_mb.unwrap_or(32), 32);
++    let write_capacity = mb_capacity(request.write_buffer_mb.unwrap_or(4), 4);
+ 
+     for (file_index, input) in request.input_files.iter().enumerate() {
+         let input_path = PathBuf::from(input);
+@@ -155,7 +156,7 @@
+             format!("正在分割 {current_name}"),
+         );
+ 
+-        split_one_file(
++        let split_result = split_one_file(
+             app,
+             &input_path,
+             &output_root,
+@@ -165,7 +166,15 @@
+             &transform_table,
+             read_capacity,
+             write_capacity,
+-        )?;
++        );
++        if let Err(error) = split_result {
++            if let Some(stem) = input_path.file_stem().and_then(|v| v.to_str()) {
++                cleanup_expected_temp_paths(&output_root, stem, file_index + 1, &request.naming_template);
++            }
++            return Err(format!(
++                "{error}（本批次已完成 {file_index}/{total} 个输入文件；已完成文件保留，当前文件临时输出已清理）"
++            ));
++        }
+ 
+         emit_progress(
+             app,
+@@ -224,22 +233,25 @@
+     let mut unit = 1.0_f64;
+     let mut bytes_read = 0_u64;
+     let mut last_emit = Instant::now();
+-    let mut line = String::with_capacity(64 * 1024);
++    let mut line_bytes = Vec::with_capacity(64 * 1024);
+     // HATCHES 是大文件最常见的热点。24 个区域的容器只创建一次并反复 clear，
+     // 避免每条 HATCHES 都分配 24 组 Vec。
+     let mut hatch_scratch: Vec<Vec<HatchSegment>> =
+         (0..REGION_COUNT).map(|_| Vec::new()).collect();
+ 
+     loop {
+-        line.clear();
++        line_bytes.clear();
+         let n = reader
+-            .read_line(&mut line)
++            .read_until(b'\n', &mut line_bytes)
+             .map_err(|e| format!("读取 CLI {} 失败：{e}", input_path.display()))?;
+         if n == 0 {
+             break;
+         }
+         bytes_read = bytes_read.saturating_add(n as u64);
+-        let stripped = line.trim_end_matches(['\r', '\n']);
++        // CLI 几何关键字/数值是 ASCII；LABEL/注释在国内设备上可能是 GBK。
++        // 使用 lossy 解码避免非 UTF-8 标注导致整单失败，几何 ASCII 部分不受影响。
++        let decoded = String::from_utf8_lossy(&line_bytes);
++        let stripped = decoded.trim_end_matches(['\r', '\n']);
+         let normalized = stripped.strip_prefix('\u{feff}').unwrap_or(stripped);
+         let token = normalized.trim();
+ 
+@@ -268,6 +280,8 @@
+                     naming_template,
+                     &header,
+                     &preamble,
++                    transforms,
++                    unit,
+                     write_capacity,
+                 )?);
+             }
+@@ -302,6 +316,8 @@
+                     naming_template,
+                     &header,
+                     &preamble,
++                    transforms,
++                    unit,
+                     write_capacity,
+                 )?);
+             }
+@@ -316,6 +332,12 @@
+                         .map_err(|e| format!("写入 LAYER 失败：{e}"))?;
+                 }
+             }
++        } else if let Some(outs) = outputs.as_mut() {
++            // 未识别的几何扩展/注释不再静默丢弃，原样（lossy 文本）透传到 24 路输出。
++            for out in outs {
++                writeln!(out.writer, "{normalized}")
++                    .map_err(|e| format!("透传未知 CLI 实体失败：{e}"))?;
++            }
+         }
+ 
+         if last_emit.elapsed() >= Duration::from_millis(250) {
+@@ -352,6 +374,8 @@
+             naming_template,
+             &header,
+             &preamble,
++            transforms,
++            unit,
+             write_capacity,
+         )?);
+     }
+@@ -367,10 +391,12 @@
+     naming_template: &str,
+     header: &[String],
+     preamble: &[String],
++    transforms: &[Transform2D; REGION_COUNT],
++    unit: f64,
+     write_capacity: usize,
+ ) -> Result<Vec<OutputFile>, String> {
+     let mut outputs = Vec::with_capacity(REGION_COUNT);
+-    for region in REGIONS {
++    for (r_index, region) in REGIONS.iter().copied().enumerate() {
+         let file_name = render_name(naming_template, index, source_stem, region.name)?;
+         let final_path = output_root.join(region.folder_id.to_string()).join(file_name);
+         let temp_path = final_path.with_extension("cli.part");
+@@ -381,9 +407,12 @@
+             .map_err(|e| format!("无法创建输出 {}：{e}", temp_path.display()))?;
+         let mut writer = BufWriter::with_capacity(write_capacity, file);
+         for line in header {
+-            if line.starts_with("$$LABEL/") {
++            if starts_with_ascii_ci(line.trim(), "$$LABEL/") {
+                 writeln!(writer, "$$LABEL/{}_{}", source_stem, region.name)
+                     .map_err(|e| format!("写入 CLI 头失败：{e}"))?;
++            } else if starts_with_ascii_ci(line.trim(), "$$DIMENSION/") {
++                let rewritten = rewrite_split_dimension(line, region, transforms[r_index], unit)?;
++                writeln!(writer, "{rewritten}").map_err(|e| format!("写入 CLI DIMENSION 失败：{e}"))?;
+             } else {
+                 writeln!(writer, "{line}").map_err(|e| format!("写入 CLI 头失败：{e}"))?;
+             }
+@@ -397,24 +426,119 @@
+     Ok(outputs)
+ }
+ 
++fn rewrite_split_dimension(
++    original: &str,
++    region: Region,
++    transform: Transform2D,
++    unit: f64,
++) -> Result<String, String> {
++    let payload = original
++        .split_once('/')
++        .map(|(_, rhs)| rhs)
++        .ok_or_else(|| format!("DIMENSION 格式错误：{original}"))?;
++    let values: Vec<f64> = payload
++        .split(',')
++        .map(|v| parse_f64(v, "DIMENSION"))
++        .collect::<Result<_, _>>()?;
++    if values.len() != 6 {
++        return Err(format!("DIMENSION 必须包含 6 个数值：{original}"));
++    }
++    let corners = [
++        transform.apply((region.xmin, region.ymin)),
++        transform.apply((region.xmin, region.ymax)),
++        transform.apply((region.xmax, region.ymin)),
++        transform.apply((region.xmax, region.ymax)),
++    ];
++    let mut xmin = f64::INFINITY;
++    let mut xmax = f64::NEG_INFINITY;
++    let mut ymin = f64::INFINITY;
++    let mut ymax = f64::NEG_INFINITY;
++    for (x, y) in corners {
++        xmin = xmin.min(x);
++        xmax = xmax.max(x);
++        ymin = ymin.min(y);
++        ymax = ymax.max(y);
++    }
++    let inv = 1.0 / unit;
++    Ok(format!(
++        "$$DIMENSION/{},{},{},{},{},{}",
++        format_cli_number(xmin * inv),
++        format_cli_number(ymin * inv),
++        format_cli_number(values[2]),
++        format_cli_number(xmax * inv),
++        format_cli_number(ymax * inv),
++        format_cli_number(values[5]),
++    ))
++}
++
++fn format_cli_number(mut value: f64) -> String {
++    if value.abs() < 0.5e-9 { value = 0.0; }
++    value = (value * 1_000_000.0).round() / 1_000_000.0;
++    let mut buffer = ryu::Buffer::new();
++    buffer.format_finite(value).to_string()
++}
++
+ fn finalize_outputs(mut outputs: Vec<OutputFile>) -> Result<(), String> {
+     for out in &mut outputs {
+         writeln!(out.writer, "$$GEOMETRYEND")
+             .map_err(|e| format!("写入 CLI 结束标记失败：{e}"))?;
+         out.writer.flush().map_err(|e| format!("刷新输出失败：{e}"))?;
+     }
+-    drop(outputs.iter_mut().map(|o| &mut o.writer).collect::<Vec<_>>());
+ 
+-    // BufWriter 只有在自身 drop 后才释放文件句柄，所以逐项拆出并重命名。
++    let mut paths = Vec::with_capacity(outputs.len());
+     for out in outputs {
+         let OutputFile { final_path, temp_path, writer, .. } = out;
+         drop(writer);
++        let backup_path = final_path.with_extension("cli.replace.bak");
++        paths.push((final_path, temp_path, backup_path));
++    }
++
++    // 先把旧正式文件改名为备份，确保 24 路提交失败时可以回滚。
++    let mut backed_up = 0usize;
++    for (final_path, _, backup_path) in &paths {
++        if backup_path.exists() {
++            let _ = fs::remove_file(backup_path);
++        }
+         if final_path.exists() {
+-            fs::remove_file(&final_path)
+-                .map_err(|e| format!("无法覆盖已有输出 {}：{e}", final_path.display()))?;
++            if let Err(e) = fs::rename(final_path, backup_path) {
++                for (old_final, _, old_backup) in &paths[..backed_up] {
++                    if old_backup.exists() {
++                        let _ = fs::rename(old_backup, old_final);
++                    }
++                }
++                for (_, temp, _) in &paths {
++                    let _ = fs::remove_file(temp);
++                }
++                return Err(format!("无法准备覆盖已有输出 {}：{e}", final_path.display()));
++            }
++        }
++        backed_up += 1;
++    }
++
++    let mut committed = 0usize;
++    for (final_path, temp_path, _) in &paths {
++        if let Err(e) = fs::rename(temp_path, final_path) {
++            // 删除本轮已经提交的新文件，并恢复旧文件备份。
++            for (new_final, _, _) in &paths[..committed] {
++                let _ = fs::remove_file(new_final);
++            }
++            for (old_final, _, backup_path) in &paths {
++                if backup_path.exists() {
++                    let _ = fs::rename(backup_path, old_final);
++                }
++            }
++            for (_, pending_temp, _) in &paths[committed..] {
++                let _ = fs::remove_file(pending_temp);
++            }
++            return Err(format!("完成输出文件 {} 失败：{e}", final_path.display()));
++        }
++        committed += 1;
++    }
++
++    for (_, _, backup_path) in &paths {
++        if backup_path.exists() {
++            let _ = fs::remove_file(backup_path);
+         }
+-        fs::rename(&temp_path, &final_path)
+-            .map_err(|e| format!("完成输出文件 {} 失败：{e}", final_path.display()))?;
+     }
+     Ok(())
+ }
+@@ -439,9 +563,55 @@
+     if request.transforms.len() < REGION_COUNT {
+         return Err(format!("分割参数不完整：需要 24 个振镜变换，当前只有 {} 个", request.transforms.len()));
+     }
++    let mut seen = HashSet::new();
++    for input in &request.input_files {
++        let path = Path::new(input);
++        let ext = path.extension().and_then(|v| v.to_str()).unwrap_or("");
++        if !ext.eq_ignore_ascii_case("cli") {
++            return Err(format!("仅支持 .cli 输入文件：{input}"));
++        }
++        let absolute = absolute_for_compare(path);
++        if !seen.insert(absolute.clone()) {
++            return Err(format!("输入文件重复：{}", absolute.display()));
++        }
++    }
++    Ok(())
++}
++
++fn validate_output_collisions(request: &SplitRequest, output_root: &Path) -> Result<(), String> {
++    let inputs: HashSet<PathBuf> = request.input_files.iter().map(|p| absolute_for_compare(Path::new(p))).collect();
++    for (file_index, input) in request.input_files.iter().enumerate() {
++        let input_path = Path::new(input);
++        let stem = input_path.file_stem().and_then(|v| v.to_str())
++            .ok_or_else(|| format!("无法读取文件名：{}", input_path.display()))?;
++        for region in REGIONS {
++            let name = render_name(&request.naming_template, file_index + 1, stem, region.name)?;
++            let final_path = output_root.join(region.folder_id.to_string()).join(name);
++            if inputs.contains(&absolute_for_compare(&final_path)) {
++                return Err(format!("分割输出不能覆盖输入文件：{}", final_path.display()));
++            }
++        }
++    }
+     Ok(())
+ }
+ 
++fn cleanup_expected_temp_paths(output_root: &Path, stem: &str, index: usize, template: &str) {
++    for region in REGIONS {
++        if let Ok(name) = render_name(template, index, stem, region.name) {
++            let final_path = output_root.join(region.folder_id.to_string()).join(name);
++            let temp_path = final_path.with_extension("cli.part");
++            let _ = fs::remove_file(temp_path);
++        }
++    }
++}
++
++fn absolute_for_compare(path: &Path) -> PathBuf {
++    fs::canonicalize(path).unwrap_or_else(|_| {
++        if path.is_absolute() { path.to_path_buf() }
++        else { std::env::current_dir().unwrap_or_default().join(path) }
++    })
++}
++
+ fn build_transform_table(items: &[MirrorTransform]) -> Result<[Transform2D; REGION_COUNT], String> {
+     let mut table = [Transform2D { a: 1.0, b: 0.0, tx: 0.0, ty: 0.0 }; REGION_COUNT];
+     let mut found = [false; REGION_COUNT];
+@@ -504,8 +674,12 @@
+ fn parse_units(header: &[String]) -> f64 {
+     header
+         .iter()
+-        .find_map(|line| line.strip_prefix("$$UNITS/")?.trim().parse::<f64>().ok())
+-        .filter(|v| *v > 0.0)
++        .find_map(|line| {
++            let token = line.trim();
++            if !starts_with_ascii_ci(token, "$$UNITS/") { return None; }
++            token.split_once('/').and_then(|(_, rhs)| rhs.trim().parse::<f64>().ok())
++        })
++        .filter(|v| v.is_finite() && *v > 0.0)
+         .unwrap_or(1.0)
+ }
+ 
+@@ -518,7 +692,7 @@
+     let _id = next_field(&mut it, "POLYLINE ID")?;
+     let kind = parse_i32(next_field(&mut it, "POLYLINE 类型")?, "POLYLINE 类型")?;
+     let count = parse_usize(next_field(&mut it, "POLYLINE 点数")?, "POLYLINE 点数")?;
+-    if count < 2 || count > 100_000_000 {
++    if count < 2 || count > 1_000_000 {
+         return Err(format!("POLYLINE 点数异常：{count}"));
+     }
+     let mut points = Vec::with_capacity(count);
+@@ -601,22 +775,39 @@
+         .map(|(_, rhs)| rhs)
+         .ok_or_else(|| format!("HATCHES 格式错误：{line}"))?;
+ 
+-    // 不 collect Vec<&str>：先用逗号数判断两种 CLI HATCHES 格式，然后流式取字段。
++    // 两种允许格式：id,count,(x1,y1,x2,y2)*N 或 id,kind,count,(...)*N。
++    // 严格校验字段数，避免 kind 恰好满足旧启发式时误判。
+     let field_count = payload.as_bytes().iter().filter(|&&b| b == b',').count() + 1;
++    let mut probe = payload.split(',');
++    let _id_probe = next_field(&mut probe, "HATCHES ID")?;
++    let second_text = next_field(&mut probe, "HATCHES 数量/类型")?;
++    let second_as_count = parse_usize(second_text, "HATCHES 数量/类型").ok();
++    let third_text = probe.next();
++    let third_as_count = third_text.and_then(|v| parse_usize(v, "HATCHES 线段数").ok());
++
++    let format1 = second_as_count
++        .map(|n| field_count == 2usize.saturating_add(n.saturating_mul(4)))
++        .unwrap_or(false);
++    let format2 = third_as_count
++        .map(|n| field_count == 3usize.saturating_add(n.saturating_mul(4)))
++        .unwrap_or(false);
++
++    if format1 == format2 {
++        return Err(format!("HATCHES 格式无法识别：字段数={field_count}"));
++    }
++
+     let mut it = payload.split(',');
+     let _id = next_field(&mut it, "HATCHES ID")?;
+     let second_text = next_field(&mut it, "HATCHES 数量/类型")?;
+-    let second = parse_usize(second_text, "HATCHES 数量/类型")?;
+-
+-    let (kind, count) = if field_count.saturating_sub(2) == second.saturating_mul(4) {
+-        (0, second)
++    let (kind, count) = if format1 {
++        (0, parse_usize(second_text, "HATCHES 线段数")?)
+     } else {
+         let kind = parse_i32(second_text, "HATCHES 类型")?;
+         let count = parse_usize(next_field(&mut it, "HATCHES 线段数")?, "HATCHES 线段数")?;
+         (kind, count)
+     };
+ 
+-    if count > 100_000_000 {
++    if count > 1_000_000 {
+         return Err(format!("HATCHES 线段数异常：{count}"));
+     }
+ 
+@@ -665,6 +856,7 @@
+     (xmin, xmax, ymin, ymax)
+ }
+ 
++#[cfg(test)]
+ fn bbox_intersects(b: (f64, f64, f64, f64), r: Region) -> bool {
+     !(b.1 < r.xmin - EPS || b.0 > r.xmax + EPS || b.3 < r.ymin - EPS || b.2 > r.ymax + EPS)
+ }
+@@ -742,7 +934,25 @@
+     if u2 < u1 - EPS {
+         return None;
+     }
+-    Some((x1 + u1 * dx, y1 + u1 * dy, x1 + u2 * dx, y1 + u2 * dy))
++    let clipped = (x1 + u1 * dx, y1 + u1 * dy, x1 + u2 * dx, y1 + u2 * dy);
++    if !owns_shared_boundary_segment(r, clipped) {
++        return None;
++    }
++    Some(clipped)
++}
++
++// 接缝采用半开区间所有权：共享竖边归右侧区域，共享横边归上侧区域。
++// 穿越接缝的线段仍会在两边各保留自己的片段；只有“整段恰好压在接缝上”时去重。
++fn owns_shared_boundary_segment(r: Region, s: (f64, f64, f64, f64)) -> bool {
++    let on_right = (s.0 - r.xmax).abs() <= EPS && (s.2 - r.xmax).abs() <= EPS;
++    if on_right && r.xmax < 1690.0 - EPS {
++        return false;
++    }
++    let on_top = (s.1 - r.ymax).abs() <= EPS && (s.3 - r.ymax).abs() <= EPS;
++    if on_top && r.ymax < 140.0 - EPS {
++        return false;
++    }
++    true
+ }
+ 
+ fn write_polyline(
+@@ -846,4 +1056,34 @@
+         assert!((c.0 - 0.0).abs() < 1e-9);
+         assert!((c.2 - 10.0).abs() < 1e-9);
+     }
++
++    #[test]
++    fn seam_line_has_single_owner() {
++        let top = REGIONS[0];
++        let bottom = REGIONS[1];
++        let top_hit = clip_segment(-1400.0, -140.0, -1200.0, -140.0, top).is_some();
++        let bottom_hit = clip_segment(-1400.0, -140.0, -1200.0, -140.0, bottom).is_some();
++        assert!(top_hit);
++        assert!(!bottom_hit);
++    }
++
++    #[test]
++    fn candidate_index_matches_bruteforce() {
++        for xi in -16..20 {
++            for yi in -6..5 {
++                let x0 = xi as f64 * 100.0;
++                let y0 = yi as f64 * 100.0;
++                let bbox = (x0, x0 + 73.0, y0, y0 + 61.0);
++                let (candidates, count) = candidate_regions_for_bbox(bbox);
++                let mut fast = candidates[..count].to_vec();
++                fast.sort_unstable();
++                let mut brute = REGIONS.iter().enumerate()
++                    .filter(|(_, r)| bbox_intersects(bbox, **r))
++                    .map(|(i, _)| i)
++                    .collect::<Vec<_>>();
++                brute.sort_unstable();
++                assert_eq!(fast, brute, "bbox={bbox:?}");
++            }
++        }
++    }
+ }
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/tauri.conf.json /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/tauri.conf.json
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/src-tauri/tauri.conf.json	2026-09-15 15:11:40.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/src-tauri/tauri.conf.json	2026-09-16 02:23:19.331518147 +0000
+@@ -22,11 +22,17 @@
+       }
+     ],
+     "security": {
+-      "csp": null
++      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+     }
+   },
+   "bundle": {
+     "active": true,
+-    "targets": "all"
++    "targets": "all",
++    "icon": [
++      "icons/32x32.png",
++      "icons/128x128.png",
++      "icons/128x128@2x.png",
++      "icons/icon.ico"
++    ]
+   }
+ }
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/tsconfig.node.tsbuildinfo /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/tsconfig.node.tsbuildinfo
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/tsconfig.node.tsbuildinfo	2026-09-15 15:36:49.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/tsconfig.node.tsbuildinfo	2026-09-16 02:27:44.057771477 +0000
+@@ -1 +1 @@
+-{"fileNames":["../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.d.ts","../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.es5.d.ts","../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.dom.d.ts","../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.webworker.importscripts.d.ts","../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.scripthost.d.ts","../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.decorators.d.ts","../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.decorators.legacy.d.ts","./vite.config.ts"],"fileInfos":[{"version":"a7297ff837fcdf174a9524925966429eb8e5feecc2cc55cc06574e6b092c1eaa","impliedFormat":1},{"version":"69684132aeb9b5642cbcd9e22dff7818ff0ee1aa831728af0ecf97d3364d5546","affectsGlobalScope":true,"impliedFormat":1},{"version":"092c2bfe125ce69dbb1223c85d68d4d2397d7d8411867b5cc03cec902c233763","affectsGlobalScope":true,"impliedFormat":1},{"version":"80e18897e5884b6723488d4f5652167e7bb5024f946743134ecc4aa4ee731f89","affectsGlobalScope":true,"impliedFormat":1},{"version":"cd034f499c6cdca722b60c04b5b1b78e058487a7085a8e0d6fb50809947ee573","affectsGlobalScope":true,"impliedFormat":1},{"version":"8e7f8264d0fb4c5339605a15daadb037bf238c10b654bb3eee14208f860a32ea","affectsGlobalScope":true,"impliedFormat":1},{"version":"782dec38049b92d4e85c1585fbea5474a219c6984a35b004963b00beb1aab538","affectsGlobalScope":true,"impliedFormat":1},{"version":"16268ec996c38822752b5c067087de748bb62b599fbe3dc47450f44a577583ed","signature":"46a0b34e1264c4d25ca6646ff0e6cfaa7275ea1ae5a6bc23d4dfd84edf2f2b2e"}],"root":[8],"options":{"composite":true,"module":99,"skipLibCheck":true},"semanticDiagnosticsPerFile":[[8,[{"start":29,"length":6,"messageText":"Cannot find module 'vite' or its corresponding type declarations.","category":1,"code":2307},{"start":55,"length":22,"messageText":"Cannot find module '@vitejs/plugin-react' or its corresponding type declarations.","category":1,"code":2307}]]],"latestChangedDtsFile":"./vite.config.d.ts","version":"5.8.3"}
+\ No newline at end of file
++{"fileNames":["../../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.d.ts","../../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.es5.d.ts","../../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.dom.d.ts","../../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.webworker.importscripts.d.ts","../../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.scripthost.d.ts","../../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.decorators.d.ts","../../../../opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/lib.decorators.legacy.d.ts","./vite.config.ts"],"fileInfos":[{"version":"a7297ff837fcdf174a9524925966429eb8e5feecc2cc55cc06574e6b092c1eaa","impliedFormat":1},{"version":"69684132aeb9b5642cbcd9e22dff7818ff0ee1aa831728af0ecf97d3364d5546","affectsGlobalScope":true,"impliedFormat":1},{"version":"092c2bfe125ce69dbb1223c85d68d4d2397d7d8411867b5cc03cec902c233763","affectsGlobalScope":true,"impliedFormat":1},{"version":"80e18897e5884b6723488d4f5652167e7bb5024f946743134ecc4aa4ee731f89","affectsGlobalScope":true,"impliedFormat":1},{"version":"cd034f499c6cdca722b60c04b5b1b78e058487a7085a8e0d6fb50809947ee573","affectsGlobalScope":true,"impliedFormat":1},{"version":"8e7f8264d0fb4c5339605a15daadb037bf238c10b654bb3eee14208f860a32ea","affectsGlobalScope":true,"impliedFormat":1},{"version":"782dec38049b92d4e85c1585fbea5474a219c6984a35b004963b00beb1aab538","affectsGlobalScope":true,"impliedFormat":1},"16268ec996c38822752b5c067087de748bb62b599fbe3dc47450f44a577583ed"],"root":[8],"options":{"composite":true,"module":99,"skipLibCheck":true},"semanticDiagnosticsPerFile":[[8,[{"start":29,"length":6,"messageText":"Cannot find module 'vite' or its corresponding type declarations.","category":1,"code":2307},{"start":55,"length":22,"messageText":"Cannot find module '@vitejs/plugin-react' or its corresponding type declarations.","category":1,"code":2307}]]],"affectedFilesPendingEmit":[8],"emitSignatures":[8],"version":"5.8.3"}
+\ No newline at end of file
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/vite.config.d.ts /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/vite.config.d.ts
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/vite.config.d.ts	2026-09-15 15:12:29.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/vite.config.d.ts	1970-01-01 00:00:00.000000000 +0000
+@@ -1,2 +0,0 @@
+-declare const _default: any;
+-export default _default;
+diff -ruN /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/vite.config.js /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/vite.config.js
+--- /mnt/data/cli-split-merge-ui-v5-original/cli-split-merge-ui/vite.config.js	2026-09-15 15:12:29.000000000 +0000
++++ /mnt/data/cli-split-merge-ui-reviewfix/cli-split-merge-ui/vite.config.js	1970-01-01 00:00:00.000000000 +0000
+@@ -1,10 +0,0 @@
+-import { defineConfig } from 'vite';
+-import react from '@vitejs/plugin-react';
+-export default defineConfig({
+-    plugins: [react()],
+-    clearScreen: false,
+-    server: {
+-        port: 1420,
+-        strictPort: true,
+-    },
+-});

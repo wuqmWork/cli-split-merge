@@ -1,0 +1,11 @@
+node_modules/
+dist/
+src-tauri/target/
+*.tsbuildinfo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.part
