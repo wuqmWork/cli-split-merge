@@ -394,7 +394,14 @@ pub fn split_cli_files(app: &AppHandle, request: SplitRequest) -> Result<SplitRe
         ),
     );
 
-    let tracker = ProgressTracker::new(total);
+    // 按文件字节大小加权聚合进度：大文件占多少比例就占多少进度条，
+    // 避免"小文件秒完把进度条推高、大文件长期卡在 9x%"的失真。
+    let file_sizes: Vec<u64> = request
+        .input_files
+        .iter()
+        .map(|path| fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+        .collect();
+    let tracker = ProgressTracker::new(file_sizes);
 
     let process_one = |file_index: usize, input: &String| -> Result<(), String> {
         let input_path = PathBuf::from(input);
@@ -1180,22 +1187,45 @@ fn determine_geometry_workers(requested_workers: usize) -> usize {
     }
 }
 
-/// 全任务进度聚合器。
+/// 全任务进度聚合器（按文件字节大小加权）。
 ///
 /// 并行模式下各 worker 处理的文件顺序与输入序号无关，若只报自己那一个文件的进度，
 /// N 个文件同时跑到 50% 时每个 worker 都只会报 0.5/N 的整体进度，前端会严重落后于真实进度。
 /// 因此这里按槽位记录每个文件的当前百分比，上报时把所有文件的贡献累加。
+///
+/// 权重：每个文件按其字节数占总字节数的比例贡献进度。
+/// 等权重公式（完成数+在途百分比）/文件数在文件大小差异大时会失真：
+/// 若干小文件几秒跑完就能把进度条推到 90%+，随后的大文件却只占 1/N 权重，
+/// 造成"进度条虚高后长时间停滞"。字节加权后进度条与真实工作量线性对应。
+/// 所有文件大小均未知（全为 0）时退化为等权重。
 struct ProgressTracker {
     completed: AtomicUsize,
     /// 每个文件的当前百分比定点值：0..10_000 表示 0%..100%
     per_file: Vec<AtomicU32>,
+    /// 每个文件的进度权重（字节数；未知时为 1）
+    weights: Vec<f64>,
+    total_weight: f64,
 }
 
 impl ProgressTracker {
-    fn new(file_count: usize) -> Self {
+    fn new(file_sizes: Vec<u64>) -> Self {
+        let weights: Vec<f64> = if file_sizes.is_empty() {
+            vec![1.0]
+        } else {
+            file_sizes.iter().map(|&s| s as f64).collect()
+        };
+        // 全部未知大小（全 0）时退化为等权重，避免整体进度恒为 0。
+        let weights = if weights.iter().all(|&w| w <= 0.0) {
+            vec![1.0; weights.len()]
+        } else {
+            weights
+        };
+        let total_weight = weights.iter().sum();
         Self {
             completed: AtomicUsize::new(0),
-            per_file: (0..file_count).map(|_| AtomicU32::new(0)).collect(),
+            per_file: (0..weights.len()).map(|_| AtomicU32::new(0)).collect(),
+            weights,
+            total_weight,
         }
     }
 
@@ -1204,9 +1234,10 @@ impl ProgressTracker {
         self.per_file[file_index].store(fixed.min(10_000), AtomicOrdering::Release);
     }
 
-    /// 标记一个文件处理完毕：先清空槽位避免与 completed 重复计数，再递增完成数。
+    /// 标记一个文件处理完毕：槽位置 100%，完成数仅驱动"已处理"计数。
+    /// 进度完全由槽位加权得出，因此不存在 completed 与槽位的重复计数。
     fn finish_file(&self, file_index: usize) -> usize {
-        self.per_file[file_index].store(0, AtomicOrdering::Release);
+        self.per_file[file_index].store(10_000, AtomicOrdering::Release);
         self.completed.fetch_add(1, AtomicOrdering::AcqRel) + 1
     }
 
@@ -1214,26 +1245,22 @@ impl ProgressTracker {
         self.per_file[file_index].load(AtomicOrdering::Acquire) as f64 / 100.0
     }
 
-    fn overall_percent(&self, total: usize) -> f64 {
-        if total == 0 {
-            return 0.0;
-        }
-        let done = self.completed.load(AtomicOrdering::Acquire) as f64;
-        let in_flight: f64 = self
+    fn overall_percent(&self) -> f64 {
+        let weighted: f64 = self
             .per_file
             .iter()
-            .map(|slot| slot.load(AtomicOrdering::Acquire) as f64 / 10_000.0)
+            .zip(&self.weights)
+            .map(|(slot, weight)| slot.load(AtomicOrdering::Acquire) as f64 / 10_000.0 * weight)
             .sum();
-        // done 与 in_flight 可能因竞态短暂重叠，clamp 到 100 兜底。
-        ((done + in_flight) / total as f64 * 100.0).clamp(0.0, 100.0)
+        (weighted / self.total_weight * 100.0).clamp(0.0, 100.0)
     }
 
-    fn advance(&self, file_index: usize, total: usize) -> (usize, f64, f64) {
+    fn advance(&self, file_index: usize) -> (usize, f64, f64) {
         let done = self.completed.load(AtomicOrdering::Acquire);
         (
             done,
             self.own_percent(file_index),
-            self.overall_percent(total),
+            self.overall_percent(),
         )
     }
 }
@@ -1246,7 +1273,7 @@ fn emit_progress(
     current_file: &str,
     message: String,
 ) {
-    let (completed, current_file_percent, overall) = tracker.advance(file_index, total);
+    let (completed, current_file_percent, overall) = tracker.advance(file_index);
     let _ = app.emit(
         EVENT_NAME,
         SplitProgress {
@@ -1991,45 +2018,62 @@ mod tests {
 
     #[test]
     fn parallel_progress_aggregates_all_files() {
-        // 8 个文件并行各跑到 50%：整体应接近 50%，而不是某一个文件的 0.5/8 = 6.25%
-        let tracker = ProgressTracker::new(8);
+        // 等权重退化场景（大小全为 0）：8 个文件并行各跑到 50%，
+        // 整体应接近 50%，而不是某一个文件的 0.5/8 = 6.25%
+        let tracker = ProgressTracker::new(vec![0; 8]);
         for slot in 0..8 {
             tracker.set_file_percent(slot, 50.0);
         }
-        let overall = tracker.overall_percent(8);
+        let overall = tracker.overall_percent();
         assert!(
             (overall - 50.0).abs() < 0.1,
             "整体进度应为 50%，实际 {overall}"
         );
-        assert_eq!(tracker.advance(3, 8).0, 0);
+        assert_eq!(tracker.advance(3).0, 0);
         assert!((tracker.own_percent(3) - 50.0).abs() < 0.1);
     }
 
     #[test]
     fn finished_files_are_not_double_counted() {
-        let tracker = ProgressTracker::new(2);
+        // 大小未知 → 等权重退化
+        let tracker = ProgressTracker::new(vec![0, 0]);
         tracker.set_file_percent(0, 80.0);
         tracker.set_file_percent(1, 40.0);
-        assert!((tracker.overall_percent(2) - 60.0).abs() < 0.1);
+        assert!((tracker.overall_percent() - 60.0).abs() < 0.1);
 
-        // 文件完成后槽位清零，避免与 completed 重复计入
+        // 完成后槽位置 100%（而非清零），进度仍由槽位唯一决定，不会重复计数
         assert_eq!(tracker.finish_file(0), 1);
-        assert_eq!(tracker.own_percent(0), 0.0);
-        assert!((tracker.overall_percent(2) - 70.0).abs() < 0.1);
+        assert!((tracker.own_percent(0) - 100.0).abs() < 0.1);
+        assert!((tracker.overall_percent() - 70.0).abs() < 0.1);
 
         tracker.set_file_percent(1, 100.0);
-        assert!((tracker.overall_percent(2) - 100.0).abs() < 0.1);
+        assert!((tracker.overall_percent() - 100.0).abs() < 0.1);
         assert_eq!(tracker.finish_file(1), 2);
-        assert!((tracker.overall_percent(2) - 100.0).abs() < 0.1);
+        assert!((tracker.overall_percent() - 100.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn progress_is_weighted_by_file_size() {
+        // 大小差异大时进度条应与字节工作量线性对应：
+        // 1 KB 小文件全部完成只贡献 1/11 ≈ 9.1%，而不是等权重的 50%。
+        let tracker = ProgressTracker::new(vec![1, 10]);
+        tracker.set_file_percent(0, 100.0);
+        tracker.finish_file(0);
+        assert!((tracker.overall_percent() - 100.0 / 11.0).abs() < 0.1);
+
+        // 大文件跑到 50% → (1 + 0.5*10)/11 ≈ 54.5%
+        tracker.set_file_percent(1, 50.0);
+        let expected = (1.0 + 5.0) / 11.0 * 100.0;
+        assert!((tracker.overall_percent() - expected).abs() < 0.1);
     }
 
     #[test]
     fn single_file_progress_matches_file_percent() {
-        let tracker = ProgressTracker::new(1);
+        let tracker = ProgressTracker::new(vec![123]);
         tracker.set_file_percent(0, 37.5);
-        assert!((tracker.overall_percent(1) - 37.5).abs() < 0.1);
+        assert!((tracker.overall_percent() - 37.5).abs() < 0.1);
         tracker.set_file_percent(0, 100.0);
-        assert!((tracker.overall_percent(1) - 100.0).abs() < 0.1);
+        assert!((tracker.overall_percent() - 100.0).abs() < 0.1);
     }
 
     #[test]
