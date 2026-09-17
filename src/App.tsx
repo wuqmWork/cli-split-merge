@@ -31,8 +31,8 @@ const defaultSettings: SettingsState = {
   appearance: 'light',
   parallel: true,
   workerCount: 0,
-  readBufferMb: 16,
-  writeBufferMb: 4,
+  readBufferMb: 16, // merge 仍使用；split 的 mmap 路径忽略此值
+  writeBufferMb: 1,
   logLevel: 'info',
   logRetentionDays: 14,
   autoClearCache: false,

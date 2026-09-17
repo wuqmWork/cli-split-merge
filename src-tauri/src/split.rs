@@ -17,6 +17,25 @@ const EVENT_NAME: &str = "split-progress";
 // 进度上报节流。60ms 兼顾流畅与开销：快速任务也能出现过渡帧，超大文件每秒最多约 17 次 IPC。
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(60);
 
+// v14: CLI 分割属于重 I/O 工作负载，不能按 CPU 核心数无限展开文件级并行。
+const DEFAULT_SPLIT_WRITE_BUFFER_MB: usize = 1;
+
+// 自动模式下最多同时处理 3 个 CLI。
+// 32 GB 内存 + 单块 NVMe 场景下，这个值比“CPU 核心数”更合理。
+const AUTO_MAX_FILE_WORKERS: usize = 3;
+
+// 用户手动指定 worker 时仍做安全上限，避免误设 16/32 导致 24 路输出成倍展开。
+const MANUAL_MAX_FILE_WORKERS: usize = 8;
+
+// 单 CLI 内部 HATCHES 几何并行上限。
+// 几何并行只在 total == 1 时启用，禁止和多文件并行叠加。
+const AUTO_MAX_GEOMETRY_WORKERS: usize = 6;
+const MANUAL_MAX_GEOMETRY_WORKERS: usize = 8;
+
+const GB: u64 = 1024 * 1024 * 1024;
+const LARGE_FILE_THRESHOLD: u64 = 4 * GB;
+const HUGE_FILE_THRESHOLD: u64 = 16 * GB;
+
 #[derive(Debug, Clone, Copy)]
 struct Region {
     name: &'static str,
@@ -29,30 +48,198 @@ struct Region {
 
 // 坐标范围位于全局 C3 坐标系；folder_id 是设备的物理编号目录。
 const REGIONS: [Region; REGION_COUNT] = [
-    Region { name: "A0", xmin: -1430.0, xmax: -1170.0, ymin: -140.0, ymax: 140.0, folder_id: 22 },
-    Region { name: "A1", xmin: -1430.0, xmax: -1170.0, ymin: -420.0, ymax: -140.0, folder_id: 23 },
-    Region { name: "A2", xmin: -1170.0, xmax: -910.0, ymin: -420.0, ymax: -140.0, folder_id: 4 },
-    Region { name: "A3", xmin: -1170.0, xmax: -910.0, ymin: -140.0, ymax: 140.0, folder_id: 1 },
-    Region { name: "B0", xmin: -910.0, xmax: -650.0, ymin: -140.0, ymax: 140.0, folder_id: 3 },
-    Region { name: "B1", xmin: -910.0, xmax: -650.0, ymin: -420.0, ymax: -140.0, folder_id: 12 },
-    Region { name: "B2", xmin: -650.0, xmax: -390.0, ymin: -420.0, ymax: -140.0, folder_id: 7 },
-    Region { name: "B3", xmin: -650.0, xmax: -390.0, ymin: -140.0, ymax: 140.0, folder_id: 14 },
-    Region { name: "C0", xmin: -390.0, xmax: -130.0, ymin: -140.0, ymax: 140.0, folder_id: 15 },
-    Region { name: "C1", xmin: -390.0, xmax: -130.0, ymin: -420.0, ymax: -140.0, folder_id: 11 },
-    Region { name: "C2", xmin: -130.0, xmax: 130.0, ymin: -420.0, ymax: -140.0, folder_id: 10 },
-    Region { name: "C3", xmin: -130.0, xmax: 130.0, ymin: -140.0, ymax: 140.0, folder_id: 6 },
-    Region { name: "D0", xmin: 130.0, xmax: 390.0, ymin: -140.0, ymax: 140.0, folder_id: 19 },
-    Region { name: "D1", xmin: 130.0, xmax: 390.0, ymin: -420.0, ymax: -140.0, folder_id: 2 },
-    Region { name: "D2", xmin: 390.0, xmax: 650.0, ymin: -420.0, ymax: -140.0, folder_id: 21 },
-    Region { name: "D3", xmin: 390.0, xmax: 650.0, ymin: -140.0, ymax: 140.0, folder_id: 24 },
-    Region { name: "E0", xmin: 650.0, xmax: 910.0, ymin: -140.0, ymax: 140.0, folder_id: 16 },
-    Region { name: "E1", xmin: 650.0, xmax: 910.0, ymin: -420.0, ymax: -140.0, folder_id: 9 },
-    Region { name: "E2", xmin: 910.0, xmax: 1170.0, ymin: -420.0, ymax: -140.0, folder_id: 13 },
-    Region { name: "E3", xmin: 910.0, xmax: 1170.0, ymin: -140.0, ymax: 140.0, folder_id: 8 },
-    Region { name: "F0", xmin: 1170.0, xmax: 1430.0, ymin: -140.0, ymax: 140.0, folder_id: 20 },
-    Region { name: "F1", xmin: 1170.0, xmax: 1430.0, ymin: -420.0, ymax: -140.0, folder_id: 5 },
-    Region { name: "F2", xmin: 1430.0, xmax: 1690.0, ymin: -420.0, ymax: -140.0, folder_id: 17 },
-    Region { name: "F3", xmin: 1430.0, xmax: 1690.0, ymin: -140.0, ymax: 140.0, folder_id: 18 },
+    Region {
+        name: "A0",
+        xmin: -1430.0,
+        xmax: -1170.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 22,
+    },
+    Region {
+        name: "A1",
+        xmin: -1430.0,
+        xmax: -1170.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 23,
+    },
+    Region {
+        name: "A2",
+        xmin: -1170.0,
+        xmax: -910.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 4,
+    },
+    Region {
+        name: "A3",
+        xmin: -1170.0,
+        xmax: -910.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 1,
+    },
+    Region {
+        name: "B0",
+        xmin: -910.0,
+        xmax: -650.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 3,
+    },
+    Region {
+        name: "B1",
+        xmin: -910.0,
+        xmax: -650.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 12,
+    },
+    Region {
+        name: "B2",
+        xmin: -650.0,
+        xmax: -390.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 7,
+    },
+    Region {
+        name: "B3",
+        xmin: -650.0,
+        xmax: -390.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 14,
+    },
+    Region {
+        name: "C0",
+        xmin: -390.0,
+        xmax: -130.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 15,
+    },
+    Region {
+        name: "C1",
+        xmin: -390.0,
+        xmax: -130.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 11,
+    },
+    Region {
+        name: "C2",
+        xmin: -130.0,
+        xmax: 130.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 10,
+    },
+    Region {
+        name: "C3",
+        xmin: -130.0,
+        xmax: 130.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 6,
+    },
+    Region {
+        name: "D0",
+        xmin: 130.0,
+        xmax: 390.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 19,
+    },
+    Region {
+        name: "D1",
+        xmin: 130.0,
+        xmax: 390.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 2,
+    },
+    Region {
+        name: "D2",
+        xmin: 390.0,
+        xmax: 650.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 21,
+    },
+    Region {
+        name: "D3",
+        xmin: 390.0,
+        xmax: 650.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 24,
+    },
+    Region {
+        name: "E0",
+        xmin: 650.0,
+        xmax: 910.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 16,
+    },
+    Region {
+        name: "E1",
+        xmin: 650.0,
+        xmax: 910.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 9,
+    },
+    Region {
+        name: "E2",
+        xmin: 910.0,
+        xmax: 1170.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 13,
+    },
+    Region {
+        name: "E3",
+        xmin: 910.0,
+        xmax: 1170.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 8,
+    },
+    Region {
+        name: "F0",
+        xmin: 1170.0,
+        xmax: 1430.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 20,
+    },
+    Region {
+        name: "F1",
+        xmin: 1170.0,
+        xmax: 1430.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 5,
+    },
+    Region {
+        name: "F2",
+        xmin: 1430.0,
+        xmax: 1690.0,
+        ymin: -420.0,
+        ymax: -140.0,
+        folder_id: 17,
+    },
+    Region {
+        name: "F3",
+        xmin: 1430.0,
+        xmax: 1690.0,
+        ymin: -140.0,
+        ymax: 140.0,
+        folder_id: 18,
+    },
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -61,6 +248,8 @@ pub struct SplitRequest {
     pub input_files: Vec<String>,
     pub output_dir: String,
     pub naming_template: String,
+    // v14: split 的 mmap 路径不再使用读取缓冲；保留字段只为前后端 IPC 反序列化兼容。
+    #[allow(dead_code)]
     pub read_buffer_mb: Option<usize>,
     pub write_buffer_mb: Option<usize>,
     pub parallel: Option<bool>,
@@ -137,7 +326,15 @@ const BOTTOM_BY_COL: [usize; COLS] = [1, 2, 5, 6, 9, 10, 13, 14, 17, 18, 21, 22]
 pub fn split_cli_files(app: &AppHandle, request: SplitRequest) -> Result<SplitResult, String> {
     let started = Instant::now();
     validate_request(&request)?;
-    crate::runtime::log(app, "info", &format!("开始 CLI 分割：{} 个输入文件，重叠区域 {:.3} mm", request.input_files.len(), request.overlap_mm.unwrap_or(2.0)));
+    crate::runtime::log(
+        app,
+        "info",
+        &format!(
+            "开始 CLI 分割：{} 个输入文件，重叠区域 {:.3} mm",
+            request.input_files.len(),
+            request.overlap_mm.unwrap_or(2.0)
+        ),
+    );
 
     let output_root = PathBuf::from(&request.output_dir);
     fs::create_dir_all(&output_root)
@@ -152,46 +349,130 @@ pub fn split_cli_files(app: &AppHandle, request: SplitRequest) -> Result<SplitRe
     }
 
     let total = request.input_files.len();
-    let read_capacity = mb_capacity(request.read_buffer_mb.unwrap_or(16), 16);
-    let write_capacity = mb_capacity(request.write_buffer_mb.unwrap_or(4), 4);
-    let parallel = request.parallel.unwrap_or(false) && total > 1;
+
+    // v14: split 已经使用 mmap，read_buffer_mb 对分割热路径没有实际作用。
+    // 为兼容前端请求字段，SplitRequest 暂时保留 read_buffer_mb，但后端不再分配读取缓冲。
+    let write_capacity = mb_capacity(
+        request
+            .write_buffer_mb
+            .unwrap_or(DEFAULT_SPLIT_WRITE_BUFFER_MB),
+        DEFAULT_SPLIT_WRITE_BUFFER_MB,
+    );
+
+    let parallel_enabled = request.parallel.unwrap_or(false);
     let requested_workers = request.worker_count.unwrap_or(0);
-    let auto_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    let workers = if requested_workers == 0 { auto_workers } else { requested_workers }.clamp(1, auto_workers.max(1));
+
+    let file_workers = if parallel_enabled && total > 1 {
+        determine_file_workers(&request.input_files, requested_workers)
+    } else {
+        1
+    };
+
+    let geometry_workers = if parallel_enabled && total == 1 {
+        determine_geometry_workers(requested_workers)
+    } else {
+        1
+    };
+
+    let file_level_parallel = parallel_enabled && total > 1 && file_workers > 1;
+    let geometry_parallel = parallel_enabled && total == 1 && geometry_workers > 1;
+
+    let largest_file = largest_input_file_size(&request.input_files);
+
+    crate::runtime::log(
+        app,
+        "info",
+        &format!(
+            "v14 分割调度：文件数={}，最大文件={:.2} GB，文件并发={}，单文件几何线程={}，写缓冲={} MB",
+            total,
+            largest_file as f64 / GB as f64,
+            file_workers,
+            geometry_workers,
+            request
+                .write_buffer_mb
+                .unwrap_or(DEFAULT_SPLIT_WRITE_BUFFER_MB),
+        ),
+    );
+
     let tracker = ProgressTracker::new(total);
 
     let process_one = |file_index: usize, input: &String| -> Result<(), String> {
         let input_path = PathBuf::from(input);
-        let current_name = input_path.file_name().and_then(|v| v.to_str()).unwrap_or(input).to_string();
-        emit_progress(app, &tracker, total, file_index, &current_name, format!("正在分割 {current_name}"));
-        let intra_file_parallel = request.parallel.unwrap_or(false) && total == 1 && workers > 1;
-        split_one_file(
-            app, &input_path, &output_root, file_index + 1, total, &request.naming_template,
-            &transform_table, overlap_mm, read_capacity, write_capacity, intra_file_parallel, workers,
+        let current_name = input_path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or(input)
+            .to_string();
+        emit_progress(
+            app,
             &tracker,
-        ).map_err(|error| {
+            total,
+            file_index,
+            &current_name,
+            format!("正在分割 {current_name}"),
+        );
+        split_one_file(
+            app,
+            &input_path,
+            &output_root,
+            file_index + 1,
+            total,
+            &request.naming_template,
+            &transform_table,
+            overlap_mm,
+            write_capacity,
+            geometry_parallel,
+            geometry_workers,
+            &tracker,
+        )
+        .map_err(|error| {
             if let Some(stem) = input_path.file_stem().and_then(|v| v.to_str()) {
-                cleanup_expected_temp_paths(&output_root, stem, file_index + 1, &request.naming_template);
+                cleanup_expected_temp_paths(
+                    &output_root,
+                    stem,
+                    file_index + 1,
+                    &request.naming_template,
+                );
             }
             format!("{error}（输入文件：{current_name}）")
         })?;
         let finished = tracker.finish_file(file_index);
-        emit_progress(app, &tracker, total, file_index, &current_name, format!("已完成 {current_name}（{finished}/{total}）"));
+        emit_progress(
+            app,
+            &tracker,
+            total,
+            file_index,
+            &current_name,
+            format!("已完成 {current_name}（{finished}/{total}）"),
+        );
         Ok(())
     };
 
-    let result: Result<(), String> = if parallel {
-        crate::runtime::log(app, "info", &format!("启用并行分割：{} 个工作线程", workers));
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(workers.min(total.max(1))).build()
-            .map_err(|e| format!("创建并行线程池失败：{e}"))?;
+    let result: Result<(), String> = if file_level_parallel {
+        crate::runtime::log(
+            app,
+            "info",
+            &format!("启用文件级并行分割：{} 个文件 worker", file_workers),
+        );
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(file_workers)
+            .build()
+            .map_err(|e| format!("创建文件级并行线程池失败：{e}"))?;
         pool.install(|| {
-            request.input_files.par_iter().enumerate()
+            request
+                .input_files
+                .par_iter()
+                .enumerate()
                 .map(|(i, input)| process_one(i, input))
                 .collect::<Result<Vec<_>, _>>()
                 .map(|_| ())
         })
     } else {
-        request.input_files.iter().enumerate().try_for_each(|(i, input)| process_one(i, input))
+        request
+            .input_files
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, input)| process_one(i, input))
     };
 
     if let Err(error) = result {
@@ -205,8 +486,14 @@ pub fn split_cli_files(app: &AppHandle, request: SplitRequest) -> Result<SplitRe
         output_dir: output_root.to_string_lossy().into_owned(),
         elapsed_ms: started.elapsed().as_millis(),
     };
-    crate::runtime::log(app, "info", &format!("CLI 分割完成：{} ms", result.elapsed_ms));
-    if let Ok(payload) = serde_json::to_string(&result) { crate::runtime::write_cache(app, "last_split", &payload); }
+    crate::runtime::log(
+        app,
+        "info",
+        &format!("CLI 分割完成：{} ms", result.elapsed_ms),
+    );
+    if let Ok(payload) = serde_json::to_string(&result) {
+        crate::runtime::write_cache(app, "last_split", &payload);
+    }
     Ok(result)
 }
 
@@ -219,10 +506,9 @@ fn split_one_file(
     naming_template: &str,
     transforms: &[Transform2D; REGION_COUNT],
     overlap_mm: f64,
-    _read_capacity: usize,
     write_capacity: usize,
     intra_file_parallel: bool,
-    worker_count: usize,
+    geometry_worker_count: usize,
     // 全任务共享的进度聚合器。并行下文件完成顺序与序号无关，必须读共享状态而非用 index 推算。
     tracker: &ProgressTracker,
 ) -> Result<(), String> {
@@ -255,9 +541,18 @@ fn split_one_file(
 
     // 单文件并行线程池每个 CLI 只创建一次，避免每条 HATCHES 重建线程池。
     let intra_pool = if intra_file_parallel {
+        crate::runtime::log(
+            app,
+            "info",
+            &format!(
+                "单 CLI 模式启用几何并行：{} 个线程（不会同时启用文件级并行）",
+                geometry_worker_count
+            ),
+        );
+
         Some(
             rayon::ThreadPoolBuilder::new()
-                .num_threads(worker_count)
+                .num_threads(geometry_worker_count)
                 .build()
                 .map_err(|e| format!("创建单文件几何线程池失败：{e}"))?,
         )
@@ -283,8 +578,7 @@ fn split_one_file(
     let mut line_start = 0usize;
     // HATCHES 是大文件最常见的热点。24 个区域的容器只创建一次并反复 clear，
     // 避免每条 HATCHES 都分配 24 组 Vec。
-    let mut hatch_scratch: Vec<Vec<HatchSegment>> =
-        (0..REGION_COUNT).map(|_| Vec::new()).collect();
+    let mut hatch_scratch: Vec<Vec<HatchSegment>> = (0..REGION_COUNT).map(|_| Vec::new()).collect();
 
     loop {
         if line_start >= mapped.len() {
@@ -352,7 +646,14 @@ fn split_one_file(
                     }
                     let id = outs[r_index].next_id;
                     outs[r_index].next_id += 1;
-                    write_polyline_buffered(&mut outs[r_index], id, poly.kind, &piece, local, unit)?;
+                    write_polyline_buffered(
+                        &mut outs[r_index],
+                        id,
+                        poly.kind,
+                        &piece,
+                        local,
+                        unit,
+                    )?;
                 }
             }
         } else if starts_with_ascii_ci_bytes(token_bytes, b"$$HATCHES/")
@@ -475,7 +776,9 @@ fn open_outputs(
     for (r_index, base_region) in REGIONS.iter().copied().enumerate() {
         let region = regions[r_index];
         let file_name = render_name(naming_template, index, source_stem, base_region.name)?;
-        let final_path = output_root.join(base_region.folder_id.to_string()).join(file_name);
+        let final_path = output_root
+            .join(base_region.folder_id.to_string())
+            .join(file_name);
         let temp_path = final_path.with_extension("cli.part");
         if temp_path.exists() {
             let _ = fs::remove_file(&temp_path);
@@ -489,7 +792,8 @@ fn open_outputs(
                     .map_err(|e| format!("写入 CLI 头失败：{e}"))?;
             } else if starts_with_ascii_ci(line.trim(), "$$DIMENSION/") {
                 let rewritten = rewrite_split_dimension(line, region, transforms[r_index], unit)?;
-                writeln!(writer, "{rewritten}").map_err(|e| format!("写入 CLI DIMENSION 失败：{e}"))?;
+                writeln!(writer, "{rewritten}")
+                    .map_err(|e| format!("写入 CLI DIMENSION 失败：{e}"))?;
             } else {
                 writeln!(writer, "{line}").map_err(|e| format!("写入 CLI 头失败：{e}"))?;
             }
@@ -498,7 +802,13 @@ fn open_outputs(
         for line in preamble {
             writeln!(writer, "{line}").map_err(|e| format!("写入 CLI 失败：{e}"))?;
         }
-        outputs.push(OutputFile { final_path, temp_path, writer, next_id: 1, line_buffer: Vec::with_capacity(64 * 1024) });
+        outputs.push(OutputFile {
+            final_path,
+            temp_path,
+            writer,
+            next_id: 1,
+            line_buffer: Vec::with_capacity(64 * 1024),
+        });
     }
     Ok(outputs)
 }
@@ -549,9 +859,13 @@ fn rewrite_split_dimension(
 }
 
 fn format_cli_number(mut value: f64) -> String {
-    if value.abs() < 5e-10 { value = 0.0; }
+    if value.abs() < 5e-10 {
+        value = 0.0;
+    }
     value = (value * 1_000_000.0).round() / 1_000_000.0;
-    if value == -0.0 { value = 0.0; }
+    if value == -0.0 {
+        value = 0.0;
+    }
     let mut buffer = ryu::Buffer::new();
     let text = buffer.format_finite(value);
     text.strip_suffix(".0").unwrap_or(text).to_string()
@@ -559,14 +873,20 @@ fn format_cli_number(mut value: f64) -> String {
 
 fn finalize_outputs(mut outputs: Vec<OutputFile>) -> Result<(), String> {
     for out in &mut outputs {
-        writeln!(out.writer, "$$GEOMETRYEND")
-            .map_err(|e| format!("写入 CLI 结束标记失败：{e}"))?;
-        out.writer.flush().map_err(|e| format!("刷新输出失败：{e}"))?;
+        writeln!(out.writer, "$$GEOMETRYEND").map_err(|e| format!("写入 CLI 结束标记失败：{e}"))?;
+        out.writer
+            .flush()
+            .map_err(|e| format!("刷新输出失败：{e}"))?;
     }
 
     let mut paths = Vec::with_capacity(outputs.len());
     for out in outputs {
-        let OutputFile { final_path, temp_path, writer, .. } = out;
+        let OutputFile {
+            final_path,
+            temp_path,
+            writer,
+            ..
+        } = out;
         drop(writer);
         let backup_path = final_path.with_extension("cli.replace.bak");
         paths.push((final_path, temp_path, backup_path));
@@ -588,7 +908,10 @@ fn finalize_outputs(mut outputs: Vec<OutputFile>) -> Result<(), String> {
                 for (_, temp, _) in &paths {
                     let _ = fs::remove_file(temp);
                 }
-                return Err(format!("无法准备覆盖已有输出 {}：{e}", final_path.display()));
+                return Err(format!(
+                    "无法准备覆盖已有输出 {}：{e}",
+                    final_path.display()
+                ));
             }
         }
         backed_up += 1;
@@ -641,10 +964,15 @@ fn validate_request(request: &SplitRequest) -> Result<(), String> {
     }
     let overlap_mm = request.overlap_mm.unwrap_or(2.0);
     if !overlap_mm.is_finite() || !(0.0..=20.0).contains(&overlap_mm) {
-        return Err(format!("重叠区域必须在 0～20 mm 之间，当前值：{overlap_mm}"));
+        return Err(format!(
+            "重叠区域必须在 0～20 mm 之间，当前值：{overlap_mm}"
+        ));
     }
     if request.transforms.len() < REGION_COUNT {
-        return Err(format!("分割参数不完整：需要 24 个振镜变换，当前只有 {} 个", request.transforms.len()));
+        return Err(format!(
+            "分割参数不完整：需要 24 个振镜变换，当前只有 {} 个",
+            request.transforms.len()
+        ));
     }
     let mut seen = HashSet::new();
     for input in &request.input_files {
@@ -667,18 +995,24 @@ fn validate_output_collisions(request: &SplitRequest, output_root: &Path) -> Res
         .iter()
         .map(|p| path_compare_key(Path::new(p)))
         .collect();
-    let mut outputs: HashSet<String> = HashSet::with_capacity(request.input_files.len() * REGION_COUNT);
+    let mut outputs: HashSet<String> =
+        HashSet::with_capacity(request.input_files.len() * REGION_COUNT);
 
     for (file_index, input) in request.input_files.iter().enumerate() {
         let input_path = Path::new(input);
-        let stem = input_path.file_stem().and_then(|v| v.to_str())
+        let stem = input_path
+            .file_stem()
+            .and_then(|v| v.to_str())
             .ok_or_else(|| format!("无法读取文件名：{}", input_path.display()))?;
         for region in REGIONS {
             let name = render_name(&request.naming_template, file_index + 1, stem, region.name)?;
             let final_path = output_root.join(region.folder_id.to_string()).join(name);
             let key = path_compare_key(&final_path);
             if inputs.contains(&key) {
-                return Err(format!("分割输出不能覆盖输入文件：{}", final_path.display()));
+                return Err(format!(
+                    "分割输出不能覆盖输入文件：{}",
+                    final_path.display()
+                ));
             }
             if !outputs.insert(key) {
                 return Err(format!(
@@ -692,7 +1026,9 @@ fn validate_output_collisions(request: &SplitRequest, output_root: &Path) -> Res
 }
 
 fn path_compare_key(path: &Path) -> String {
-    let normalized = absolute_for_compare(path).to_string_lossy().replace('\\', "/");
+    let normalized = absolute_for_compare(path)
+        .to_string_lossy()
+        .replace('\\', "/");
     #[cfg(windows)]
     {
         normalized.to_lowercase()
@@ -715,13 +1051,21 @@ fn cleanup_expected_temp_paths(output_root: &Path, stem: &str, index: usize, tem
 
 fn absolute_for_compare(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| {
-        if path.is_absolute() { path.to_path_buf() }
-        else { std::env::current_dir().unwrap_or_default().join(path) }
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path)
+        }
     })
 }
 
 fn build_transform_table(items: &[MirrorTransform]) -> Result<[Transform2D; REGION_COUNT], String> {
-    let mut table = [Transform2D { a: 1.0, b: 0.0, tx: 0.0, ty: 0.0 }; REGION_COUNT];
+    let mut table = [Transform2D {
+        a: 1.0,
+        b: 0.0,
+        tx: 0.0,
+        ty: 0.0,
+    }; REGION_COUNT];
     let mut found = [false; REGION_COUNT];
 
     for item in items {
@@ -729,8 +1073,16 @@ fn build_transform_table(items: &[MirrorTransform]) -> Result<[Transform2D; REGI
         if !source.eq_ignore_ascii_case("C3") {
             continue;
         }
-        if let Some(index) = REGIONS.iter().position(|r| r.name.eq_ignore_ascii_case(item.target.trim())) {
-            table[index] = Transform2D { a: item.a, b: item.b, tx: item.tx, ty: item.ty };
+        if let Some(index) = REGIONS
+            .iter()
+            .position(|r| r.name.eq_ignore_ascii_case(item.target.trim()))
+        {
+            table[index] = Transform2D {
+                a: item.a,
+                b: item.b,
+                tx: item.tx,
+                ty: item.ty,
+            };
             found[index] = true;
         }
     }
@@ -748,8 +1100,84 @@ fn build_transform_table(items: &[MirrorTransform]) -> Result<[Transform2D; REGI
 }
 
 fn mb_capacity(value: usize, default_mb: usize) -> usize {
-    let mb = if value == 0 { default_mb } else { value.clamp(1, 512) };
+    let mb = if value == 0 {
+        default_mb
+    } else {
+        value.clamp(1, 512)
+    };
     mb * 1024 * 1024
+}
+
+fn available_cpu_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn largest_input_file_size(input_files: &[String]) -> u64 {
+    input_files
+        .iter()
+        .filter_map(|path| fs::metadata(path).ok())
+        .map(|meta| meta.len())
+        .max()
+        .unwrap_or(0)
+}
+
+/// v14 文件级并发策略：
+///
+/// 1. 自动模式不再等于 CPU 核心数；
+/// 2. 大文件自动降并发；
+/// 3. 手动 worker 也设置硬上限；
+/// 4. worker 永远不超过输入文件数。
+fn determine_file_workers(input_files: &[String], requested_workers: usize) -> usize {
+    let total = input_files.len();
+
+    if total <= 1 {
+        return 1;
+    }
+
+    let cpu_count = available_cpu_count();
+    let largest_file = largest_input_file_size(input_files);
+
+    let base_workers = if requested_workers == 0 {
+        match total {
+            0 | 1 => 1,
+            2..=4 => 2,
+            _ => AUTO_MAX_FILE_WORKERS,
+        }
+    } else {
+        requested_workers.min(MANUAL_MAX_FILE_WORKERS)
+    };
+
+    let size_cap = file_worker_size_cap(largest_file);
+
+    base_workers.min(size_cap).min(cpu_count).min(total).max(1)
+}
+
+fn file_worker_size_cap(largest_file: u64) -> usize {
+    if largest_file >= HUGE_FILE_THRESHOLD {
+        1
+    } else if largest_file >= LARGE_FILE_THRESHOLD {
+        2
+    } else {
+        AUTO_MAX_FILE_WORKERS
+    }
+}
+
+/// 单 CLI 内部几何并行线程数。
+/// 只用于 total == 1，绝不能和文件级并行同时启用。
+fn determine_geometry_workers(requested_workers: usize) -> usize {
+    let cpu_count = available_cpu_count();
+
+    if requested_workers == 0 {
+        cpu_count.min(AUTO_MAX_GEOMETRY_WORKERS).max(1)
+    } else {
+        requested_workers
+            .min(MANUAL_MAX_GEOMETRY_WORKERS)
+            .min(cpu_count)
+            .max(1)
+    }
 }
 
 /// 全任务进度聚合器。
@@ -838,7 +1266,10 @@ fn parse_units(header: &[String]) -> Result<f64, String> {
         if !starts_with_ascii_ci(token, "$$UNITS/") {
             continue;
         }
-        let rhs = token.split_once('/').map(|(_, rhs)| rhs.trim()).unwrap_or("");
+        let rhs = token
+            .split_once('/')
+            .map(|(_, rhs)| rhs.trim())
+            .unwrap_or("");
         if rhs.is_empty() {
             return Ok(1.0);
         }
@@ -852,7 +1283,9 @@ fn parse_units(header: &[String]) -> Result<f64, String> {
 }
 
 fn parse_polyline_bytes(line: &[u8], unit: f64) -> Result<Polyline, String> {
-    let slash = line.iter().position(|&b| b == b'/')
+    let slash = line
+        .iter()
+        .position(|&b| b == b'/')
         .ok_or_else(|| "POLYLINE 格式错误：缺少 /".to_string())?;
     let payload = &line[slash + 1..];
     let mut it = payload.split(|&b| b == b',');
@@ -886,10 +1319,18 @@ fn normalize_cli_line_bytes(line: &[u8]) -> &[u8] {
 #[inline]
 fn trim_ascii_bytes(mut value: &[u8]) -> &[u8] {
     while let Some((&first, rest)) = value.split_first() {
-        if first.is_ascii_whitespace() { value = rest; } else { break; }
+        if first.is_ascii_whitespace() {
+            value = rest;
+        } else {
+            break;
+        }
     }
     while let Some((&last, rest)) = value.split_last() {
-        if last.is_ascii_whitespace() { value = rest; } else { break; }
+        if last.is_ascii_whitespace() {
+            value = rest;
+        } else {
+            break;
+        }
     }
     value
 }
@@ -902,7 +1343,10 @@ fn eq_ascii_ci_bytes(a: &[u8], b: &[u8]) -> bool {
 #[inline]
 fn starts_with_ascii_ci_bytes(value: &[u8], prefix: &[u8]) -> bool {
     value.len() >= prefix.len()
-        && value[..prefix.len()].iter().zip(prefix).all(|(&x, &y)| x.eq_ignore_ascii_case(&y))
+        && value[..prefix.len()]
+            .iter()
+            .zip(prefix)
+            .all(|(&x, &y)| x.eq_ignore_ascii_case(&y))
 }
 
 #[inline]
@@ -910,7 +1354,9 @@ fn next_field_bytes<'a>(
     it: &mut impl Iterator<Item = &'a [u8]>,
     name: &str,
 ) -> Result<&'a [u8], String> {
-    it.next().map(trim_ascii_bytes).ok_or_else(|| format!("缺少字段：{name}"))
+    it.next()
+        .map(trim_ascii_bytes)
+        .ok_or_else(|| format!("缺少字段：{name}"))
 }
 
 #[inline]
@@ -1025,7 +1471,9 @@ fn process_hatches_line_bytes(
         bucket.clear();
     }
 
-    let slash = line.iter().position(|&b| b == b'/')
+    let slash = line
+        .iter()
+        .position(|&b| b == b'/')
         .ok_or_else(|| "HATCHES 格式错误：缺少 /".to_string())?;
     let payload = &line[slash + 1..];
 
@@ -1057,7 +1505,10 @@ fn process_hatches_line_bytes(
         (0, parse_usize_bytes(second_text, "HATCHES 线段数")?)
     } else {
         let kind = parse_i32_bytes(second_text, "HATCHES 类型")?;
-        let count = parse_usize_bytes(next_field_bytes(&mut it, "HATCHES 线段数")?, "HATCHES 线段数")?;
+        let count = parse_usize_bytes(
+            next_field_bytes(&mut it, "HATCHES 线段数")?,
+            "HATCHES 线段数",
+        )?;
         (kind, count)
     };
 
@@ -1076,10 +1527,14 @@ fn process_hatches_line_bytes(
         let parallel_chunk = (count / threads.saturating_mul(4).max(1)).clamp(128, 2048);
         let mut segments = Vec::with_capacity(count);
         for _ in 0..count {
-            let x1 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x1")?, "HATCHES x1")? * unit;
-            let y1 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y1")?, "HATCHES y1")? * unit;
-            let x2 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x2")?, "HATCHES x2")? * unit;
-            let y2 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y2")?, "HATCHES y2")? * unit;
+            let x1 =
+                parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x1")?, "HATCHES x1")? * unit;
+            let y1 =
+                parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y1")?, "HATCHES y1")? * unit;
+            let x2 =
+                parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x2")?, "HATCHES x2")? * unit;
+            let y2 =
+                parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y2")?, "HATCHES y2")? * unit;
             segments.push((x1, y1, x2, y2));
         }
 
@@ -1091,7 +1546,8 @@ fn process_hatches_line_bytes(
                         std::array::from_fn(|_| Vec::new());
                     for &(x1, y1, x2, y2) in chunk {
                         let bbox = (x1.min(x2), x1.max(x2), y1.min(y2), y1.max(y2));
-                        let (candidates, candidate_count) = candidate_regions_for_bbox(bbox, regions, overlap_mm);
+                        let (candidates, candidate_count) =
+                            candidate_regions_for_bbox(bbox, regions, overlap_mm);
                         for &r_index in &candidates[..candidate_count] {
                             let region = regions[r_index];
                             if let Some((cx1, cy1, cx2, cy2)) =
@@ -1116,13 +1572,18 @@ fn process_hatches_line_bytes(
         }
     } else {
         for _ in 0..count {
-            let x1 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x1")?, "HATCHES x1")? * unit;
-            let y1 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y1")?, "HATCHES y1")? * unit;
-            let x2 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x2")?, "HATCHES x2")? * unit;
-            let y2 = parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y2")?, "HATCHES y2")? * unit;
+            let x1 =
+                parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x1")?, "HATCHES x1")? * unit;
+            let y1 =
+                parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y1")?, "HATCHES y1")? * unit;
+            let x2 =
+                parse_f64_bytes(next_field_bytes(&mut it, "HATCHES x2")?, "HATCHES x2")? * unit;
+            let y2 =
+                parse_f64_bytes(next_field_bytes(&mut it, "HATCHES y2")?, "HATCHES y2")? * unit;
 
             let bbox = (x1.min(x2), x1.max(x2), y1.min(y2), y1.max(y2));
-            let (candidates, candidate_count) = candidate_regions_for_bbox(bbox, regions, overlap_mm);
+            let (candidates, candidate_count) =
+                candidate_regions_for_bbox(bbox, regions, overlap_mm);
             for &r_index in &candidates[..candidate_count] {
                 let region = regions[r_index];
                 if let Some((cx1, cy1, cx2, cy2)) =
@@ -1168,13 +1629,19 @@ fn bbox_intersects(b: (f64, f64, f64, f64), r: Region) -> bool {
     bbox_intersects_region(b, r)
 }
 
-fn clip_polyline(points: &[(f64, f64)], region: Region, unique_shared_boundary: bool) -> Vec<Vec<(f64, f64)>> {
+fn clip_polyline(
+    points: &[(f64, f64)],
+    region: Region,
+    unique_shared_boundary: bool,
+) -> Vec<Vec<(f64, f64)>> {
     let mut pieces: Vec<Vec<(f64, f64)>> = Vec::new();
     let mut current: Vec<(f64, f64)> = Vec::new();
     for pair in points.windows(2) {
         let (x1, y1) = pair[0];
         let (x2, y2) = pair[1];
-        if let Some((cx1, cy1, cx2, cy2)) = clip_segment(x1, y1, x2, y2, region, unique_shared_boundary) {
+        if let Some((cx1, cy1, cx2, cy2)) =
+            clip_segment(x1, y1, x2, y2, region, unique_shared_boundary)
+        {
             let p1 = (cx1, cy1);
             let p2 = (cx2, cy2);
             if current.is_empty() {
@@ -1289,7 +1756,9 @@ fn write_polyline_buffered(
         append_cli_number(buf, q.1 * inv);
     }
     buf.push(b'\n');
-    out.writer.write_all(buf).map_err(|e| format!("写入 POLYLINE 失败：{e}"))
+    out.writer
+        .write_all(buf)
+        .map_err(|e| format!("写入 POLYLINE 失败：{e}"))
 }
 
 fn write_hatches_buffered(
@@ -1322,14 +1791,20 @@ fn write_hatches_buffered(
         }
     }
     buf.push(b'\n');
-    out.writer.write_all(buf).map_err(|e| format!("写入 HATCHES 失败：{e}"))
+    out.writer
+        .write_all(buf)
+        .map_err(|e| format!("写入 HATCHES 失败：{e}"))
 }
 
 #[inline]
 fn append_cli_number(buf: &mut Vec<u8>, mut value: f64) {
-    if value.abs() < 5e-10 { value = 0.0; }
+    if value.abs() < 5e-10 {
+        value = 0.0;
+    }
     value = (value * 1_000_000.0).round() / 1_000_000.0;
-    if value == -0.0 { value = 0.0; }
+    if value == -0.0 {
+        value = 0.0;
+    }
     let mut buffer = ryu::Buffer::new();
     let text = buffer.format_finite(value);
     let text = text.strip_suffix(".0").unwrap_or(text);
@@ -1354,7 +1829,12 @@ fn append_i32(buf: &mut Vec<u8>, value: i32) {
     buf.extend_from_slice(tmp.format(value).as_bytes());
 }
 
-fn render_name(template: &str, index: usize, source_stem: &str, mirror: &str) -> Result<String, String> {
+fn render_name(
+    template: &str,
+    index: usize,
+    source_stem: &str,
+    mirror: &str,
+) -> Result<String, String> {
     let mut name = template
         .replace("{index:03}", &format!("{index:03}"))
         .replace("{index}", &index.to_string())
@@ -1390,7 +1870,14 @@ mod tests {
 
     #[test]
     fn clipping_works() {
-        let r = Region { name: "X", xmin: 0.0, xmax: 10.0, ymin: 0.0, ymax: 10.0, folder_id: 1 };
+        let r = Region {
+            name: "X",
+            xmin: 0.0,
+            xmax: 10.0,
+            ymin: 0.0,
+            ymax: 10.0,
+            folder_id: 1,
+        };
         let c = clip_segment(-5.0, 5.0, 15.0, 5.0, r, true).unwrap();
         assert!((c.0 - 0.0).abs() < 1e-9);
         assert!((c.2 - 10.0).abs() < 1e-9);
@@ -1431,7 +1918,9 @@ mod tests {
                 let (candidates, count) = candidate_regions_for_bbox(bbox, &regions, 0.0);
                 let mut fast = candidates[..count].to_vec();
                 fast.sort_unstable();
-                let mut brute = REGIONS.iter().enumerate()
+                let mut brute = REGIONS
+                    .iter()
+                    .enumerate()
                     .filter(|(_, r)| bbox_intersects(bbox, **r))
                     .map(|(i, _)| i)
                     .collect::<Vec<_>>();
@@ -1493,9 +1982,11 @@ mod tests {
 
     #[test]
     fn raw_line_normalization_keeps_non_utf8_bytes() {
-        let raw = [0x24, 0x24, 0x4c, 0x41, 0x42, 0x45, 0x4c, 0x2f, 0x81, 0x82, b'\r', b'\n'];
+        let raw = [
+            0x24, 0x24, 0x4c, 0x41, 0x42, 0x45, 0x4c, 0x2f, 0x81, 0x82, b'\r', b'\n',
+        ];
         let line = normalize_cli_line_bytes(&raw);
-        assert_eq!(&line[line.len()-2..], &[0x81, 0x82]);
+        assert_eq!(&line[line.len() - 2..], &[0x81, 0x82]);
     }
 
     #[test]
@@ -1506,7 +1997,10 @@ mod tests {
             tracker.set_file_percent(slot, 50.0);
         }
         let overall = tracker.overall_percent(8);
-        assert!((overall - 50.0).abs() < 0.1, "整体进度应为 50%，实际 {overall}");
+        assert!(
+            (overall - 50.0).abs() < 0.1,
+            "整体进度应为 50%，实际 {overall}"
+        );
         assert_eq!(tracker.advance(3, 8).0, 0);
         assert!((tracker.own_percent(3) - 50.0).abs() < 0.1);
     }
@@ -1538,4 +2032,61 @@ mod tests {
         assert!((tracker.overall_percent(1) - 100.0).abs() < 0.1);
     }
 
+    #[test]
+    fn v14_auto_file_workers_are_io_limited() {
+        let files = vec![
+            "__missing_1.cli".to_string(),
+            "__missing_2.cli".to_string(),
+            "__missing_3.cli".to_string(),
+            "__missing_4.cli".to_string(),
+            "__missing_5.cli".to_string(),
+            "__missing_6.cli".to_string(),
+        ];
+
+        let workers = determine_file_workers(&files, 0);
+
+        assert!(workers >= 1);
+        assert!(workers <= AUTO_MAX_FILE_WORKERS);
+        assert!(workers <= files.len());
+    }
+
+    #[test]
+    fn v14_manual_file_workers_have_hard_cap() {
+        let files = (0..20)
+            .map(|i| format!("__missing_{i}.cli"))
+            .collect::<Vec<_>>();
+
+        let workers = determine_file_workers(&files, 64);
+
+        assert!(workers <= MANUAL_MAX_FILE_WORKERS);
+        assert!(workers <= AUTO_MAX_FILE_WORKERS);
+    }
+
+    #[test]
+    fn v14_single_file_never_uses_file_parallelism() {
+        let files = vec!["__missing.cli".to_string()];
+
+        assert_eq!(determine_file_workers(&files, 8), 1);
+    }
+
+    #[test]
+    fn v14_geometry_workers_are_capped() {
+        let auto = determine_geometry_workers(0);
+        let manual = determine_geometry_workers(64);
+
+        assert!(auto >= 1);
+        assert!(auto <= AUTO_MAX_GEOMETRY_WORKERS);
+
+        assert!(manual >= 1);
+        assert!(manual <= MANUAL_MAX_GEOMETRY_WORKERS);
+    }
+
+    #[test]
+    fn v14_large_files_reduce_file_parallelism() {
+        assert_eq!(file_worker_size_cap(1 * GB), 3);
+        assert_eq!(file_worker_size_cap(4 * GB), 2);
+        assert_eq!(file_worker_size_cap(8 * GB), 2);
+        assert_eq!(file_worker_size_cap(16 * GB), 1);
+        assert_eq!(file_worker_size_cap(32 * GB), 1);
+    }
 }

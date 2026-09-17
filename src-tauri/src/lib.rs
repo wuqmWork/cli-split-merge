@@ -27,13 +27,22 @@ impl Drop for TaskGuard {
 }
 
 #[tauri::command]
-async fn load_parameter_excel(app: AppHandle, path: String) -> Result<ParameterSnapshotDto, String> {
+async fn load_parameter_excel(
+    app: AppHandle,
+    path: String,
+) -> Result<ParameterSnapshotDto, String> {
     let worker_app = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || parameter::load_parameter_excel(&worker_app, &path))
-        .await
-        .map_err(|e| format!("参数加载任务异常退出：{e}"))?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        parameter::load_parameter_excel(&worker_app, &path)
+    })
+    .await
+    .map_err(|e| format!("参数加载任务异常退出：{e}"))?;
     match &result {
-        Ok(v) => runtime::log(&app, "info", &format!("参数文件加载成功：{}", v.source_name)),
+        Ok(v) => runtime::log(
+            &app,
+            "info",
+            &format!("参数文件加载成功：{}", v.source_name),
+        ),
         Err(e) => runtime::log(&app, "error", &format!("参数文件加载失败：{e}")),
     }
     result
@@ -48,10 +57,13 @@ fn load_saved_parameter_snapshot(app: AppHandle) -> Result<Option<ParameterSnaps
 async fn split_cli_files(app: AppHandle, request: SplitRequest) -> Result<SplitResult, String> {
     let _guard = TaskGuard::acquire()?;
     let worker_app = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || split::split_cli_files(&worker_app, request))
-        .await
-        .map_err(|e| format!("分割任务异常退出：{e}"))?;
-    if let Err(e) = &result { runtime::log(&app, "error", &format!("CLI 分割失败：{e}")); }
+    let result =
+        tauri::async_runtime::spawn_blocking(move || split::split_cli_files(&worker_app, request))
+            .await
+            .map_err(|e| format!("分割任务异常退出：{e}"))?;
+    if let Err(e) = &result {
+        runtime::log(&app, "error", &format!("CLI 分割失败：{e}"));
+    }
     result
 }
 
@@ -59,16 +71,21 @@ async fn split_cli_files(app: AppHandle, request: SplitRequest) -> Result<SplitR
 async fn merge_cli_files(app: AppHandle, request: MergeRequest) -> Result<MergeResult, String> {
     let _guard = TaskGuard::acquire()?;
     let worker_app = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || merge::merge_cli_files(&worker_app, request))
-        .await
-        .map_err(|e| format!("合并任务异常退出：{e}"))?;
-    if let Err(e) = &result { runtime::log(&app, "error", &format!("CLI 合并失败：{e}")); }
+    let result =
+        tauri::async_runtime::spawn_blocking(move || merge::merge_cli_files(&worker_app, request))
+            .await
+            .map_err(|e| format!("合并任务异常退出：{e}"))?;
+    if let Err(e) = &result {
+        runtime::log(&app, "error", &format!("CLI 合并失败：{e}"));
+    }
     result
 }
 
-
 #[tauri::command]
-fn apply_runtime_settings(app: AppHandle, settings: runtime::RuntimeSettings) -> Result<(), String> {
+fn apply_runtime_settings(
+    app: AppHandle,
+    settings: runtime::RuntimeSettings,
+) -> Result<(), String> {
     runtime::apply_settings(&app, settings)
 }
 
@@ -86,7 +103,6 @@ fn clear_cache(app: AppHandle) -> Result<u64, String> {
 fn clear_logs(app: AppHandle) -> Result<u64, String> {
     runtime::clear_logs(&app)
 }
-
 
 #[tauri::command]
 fn install_ui_image(app: AppHandle, kind: String, path: String) -> Result<String, String> {
@@ -111,7 +127,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            if matches!(event, tauri::RunEvent::ExitRequested { .. }) && runtime::current_settings().auto_clear_cache {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. })
+                && runtime::current_settings().auto_clear_cache
+            {
                 let _ = runtime::clear_cache(app);
             }
         });

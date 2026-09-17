@@ -46,8 +46,8 @@ pub fn load_parameter_excel(app: &AppHandle, path: &str) -> Result<ParameterSnap
         return Err(format!("参数文件不存在：{}", source_path.display()));
     }
 
-    let mut workbook = open_workbook_auto(&source_path)
-        .map_err(|e| format!("无法打开 Excel 参数文件：{e}"))?;
+    let mut workbook =
+        open_workbook_auto(&source_path).map_err(|e| format!("无法打开 Excel 参数文件：{e}"))?;
 
     let range = workbook
         .worksheet_range(SHEET_NAME)
@@ -64,16 +64,26 @@ pub fn load_parameter_excel(app: &AppHandle, path: &str) -> Result<ParameterSnap
     // 精简格式：仅 源坐标系/目标坐标系/点数/a/b/tx/ty，旋转角与矩阵由 a/b 推导。
     let simple = is_simple_format(&columns);
 
-    for required in [
-        "源坐标系", "目标坐标系", "a", "b", "tx", "ty",
-    ] {
+    for required in ["源坐标系", "目标坐标系", "a", "b", "tx", "ty"] {
         if !columns.contains_key(required) {
             return Err(format!("参数文件格式不完整：缺少列“{required}”"));
         }
     }
     if !simple {
         for required in [
-            "类别", "变换名称", "点数", "旋转角deg", "m11", "m12", "m13", "m21", "m22", "m23", "m31", "m32", "m33",
+            "类别",
+            "变换名称",
+            "点数",
+            "旋转角deg",
+            "m11",
+            "m12",
+            "m13",
+            "m21",
+            "m22",
+            "m23",
+            "m31",
+            "m32",
+            "m33",
         ] {
             if !columns.contains_key(required) {
                 return Err(format!("参数文件格式不完整：缺少列“{required}”"));
@@ -209,7 +219,9 @@ fn parse_simple_row(
     })
 }
 
-pub fn load_saved_parameter_snapshot(app: &AppHandle) -> Result<Option<ParameterSnapshotDto>, String> {
+pub fn load_saved_parameter_snapshot(
+    app: &AppHandle,
+) -> Result<Option<ParameterSnapshotDto>, String> {
     let path = snapshot_path(app)?;
     if !path.exists() {
         return Ok(None);
@@ -235,7 +247,11 @@ pub fn load_saved_parameter_snapshot(app: &AppHandle) -> Result<Option<Parameter
         }
         validate_transform(transform, index + 1)?;
     }
-    let targets: BTreeSet<String> = snapshot.transforms.iter().map(|v| v.target.clone()).collect();
+    let targets: BTreeSet<String> = snapshot
+        .transforms
+        .iter()
+        .map(|v| v.target.clone())
+        .collect();
     validate_mirror_set(targets)?;
     Ok(Some(snapshot))
 }
@@ -247,7 +263,8 @@ fn persist_snapshot(app: &AppHandle, snapshot: &ParameterSnapshotDto) -> Result<
     }
 
     let temp = path.with_extension("json.tmp");
-    let payload = serde_json::to_vec_pretty(snapshot).map_err(|e| format!("序列化参数快照失败：{e}"))?;
+    let payload =
+        serde_json::to_vec_pretty(snapshot).map_err(|e| format!("序列化参数快照失败：{e}"))?;
     fs::write(&temp, payload).map_err(|e| format!("写入参数快照失败：{e}"))?;
     fs::rename(&temp, &path).map_err(|e| format!("保存参数快照失败：{e}"))?;
     Ok(())
