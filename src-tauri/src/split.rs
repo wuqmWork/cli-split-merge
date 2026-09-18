@@ -265,6 +265,9 @@ pub struct SplitResult {
     pub output_count: usize,
     pub output_dir: String,
     pub elapsed_ms: u128,
+    /// 校验/解析失败被跳过的输入文件（文件名），为空表示全部成功。
+    #[serde(default)]
+    pub failed_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -403,6 +406,7 @@ pub fn split_cli_files(app: &AppHandle, request: SplitRequest) -> Result<SplitRe
         .collect();
     let tracker = ProgressTracker::new(file_sizes);
 
+    // 单文件失败只跳过并记录，不中止整个任务；结束后统一汇总报告。
     let process_one = |file_index: usize, input: &String| -> Result<(), String> {
         let input_path = PathBuf::from(input);
         let current_name = input_path
@@ -418,7 +422,7 @@ pub fn split_cli_files(app: &AppHandle, request: SplitRequest) -> Result<SplitRe
             &current_name,
             format!("正在分割 {current_name}"),
         );
-        split_one_file(
+        let outcome = split_one_file(
             app,
             &input_path,
             &output_root,
@@ -442,20 +446,37 @@ pub fn split_cli_files(app: &AppHandle, request: SplitRequest) -> Result<SplitRe
                 );
             }
             format!("{error}（输入文件：{current_name}）")
-        })?;
+        });
+        // 无论成功还是跳过，都把该文件槽位闭环，避免进度条与计数卡在中途。
         let finished = tracker.finish_file(file_index);
-        emit_progress(
-            app,
-            &tracker,
-            total,
-            file_index,
-            &current_name,
-            format!("已完成 {current_name}（{finished}/{total}）"),
-        );
-        Ok(())
+        match outcome {
+            Ok(()) => {
+                emit_progress(
+                    app,
+                    &tracker,
+                    total,
+                    file_index,
+                    &current_name,
+                    format!("已完成 {current_name}（{finished}/{total}）"),
+                );
+                Ok(())
+            }
+            Err(error) => {
+                emit_progress(
+                    app,
+                    &tracker,
+                    total,
+                    file_index,
+                    &current_name,
+                    format!("已跳过 {current_name}（{finished}/{total}）"),
+                );
+                Err(error)
+            }
+        }
     };
 
-    let result: Result<(), String> = if file_level_parallel {
+    // 收集每个文件的结果：失败不中断其他文件，全部跑完后汇总。
+    let results: Vec<Result<(), String>> = if file_level_parallel {
         crate::runtime::log(
             app,
             "info",
@@ -471,32 +492,73 @@ pub fn split_cli_files(app: &AppHandle, request: SplitRequest) -> Result<SplitRe
                 .par_iter()
                 .enumerate()
                 .map(|(i, input)| process_one(i, input))
-                .collect::<Result<Vec<_>, _>>()
-                .map(|_| ())
+                .collect::<Vec<_>>()
         })
     } else {
         request
             .input_files
             .iter()
             .enumerate()
-            .try_for_each(|(i, input)| process_one(i, input))
+            .map(|(i, input)| process_one(i, input))
+            .collect()
     };
 
-    if let Err(error) = result {
+    // 汇总失败文件（保持输入顺序，便于用户对照）。
+    let failed_files: Vec<String> = request
+        .input_files
+        .iter()
+        .zip(&results)
+        .filter_map(|(input, result)| {
+            result.as_ref().err().map(|error| {
+                crate::runtime::log(app, "error", &format!("CLI 分割失败：{error}"));
+                input
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .unwrap_or(input)
+                    .to_string()
+            })
+        })
+        .collect();
+
+    if failed_files.len() == total {
+        let error = format!(
+            "全部 {} 个输入文件均处理失败（首个错误：{}）",
+            total,
+            results
+                .iter()
+                .find_map(|r| r.as_ref().err().cloned())
+                .unwrap_or_default()
+        );
         crate::runtime::log(app, "error", &format!("CLI 分割失败：{error}"));
         return Err(error);
     }
+    if !failed_files.is_empty() {
+        crate::runtime::log(
+            app,
+            "warn",
+            &format!(
+                "跳过 {} 个失败文件：{}",
+                failed_files.len(),
+                failed_files.join("、")
+            ),
+        );
+    }
 
+    let success_count = total - failed_files.len();
     let result = SplitResult {
         input_count: total,
-        output_count: total * REGION_COUNT,
+        output_count: success_count * REGION_COUNT,
         output_dir: output_root.to_string_lossy().into_owned(),
         elapsed_ms: started.elapsed().as_millis(),
+        failed_files,
     };
     crate::runtime::log(
         app,
         "info",
-        &format!("CLI 分割完成：{} ms", result.elapsed_ms),
+        &format!(
+            "CLI 分割完成：成功 {}/{} 个文件，{} ms",
+            success_count, total, result.elapsed_ms
+        ),
     );
     if let Ok(payload) = serde_json::to_string(&result) {
         crate::runtime::write_cache(app, "last_split", &payload);

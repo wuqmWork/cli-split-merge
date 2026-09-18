@@ -31,6 +31,7 @@ export type SplitResult = {
   outputCount: number;
   outputDir: string;
   elapsedMs: number;
+  failedFiles?: string[];
 };
 
 export type SplitProgressEvent = {

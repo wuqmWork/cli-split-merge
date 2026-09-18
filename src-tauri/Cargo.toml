@@ -1,6 +1,6 @@
 [package]
 name = "cli-split-merge"
-version = "1.2.0"
+version = "1.2.1"
 description = "CLI Split & Merge desktop utility"
 authors = ["Simple Tools"]
 edition = "2021"

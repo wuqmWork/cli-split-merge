@@ -270,7 +270,7 @@ export default function App() {
         }));
       });
 
-      await splitCliFiles({
+      const result = await splitCliFiles({
         inputFiles: splitFiles.map((file) => file.path),
         outputDir: splitOutput,
         namingTemplate: settingsState.splitNamingTemplate,
@@ -282,15 +282,25 @@ export default function App() {
         transforms: parameter.transforms,
       });
 
+      const failedCount = result.failedFiles?.length ?? 0;
       setProgress((prev) => ({
         ...prev,
         running: false,
         percent: 100,
-        completed: splitFiles.length,
+        completed: splitFiles.length - failedCount,
         total: splitFiles.length,
         currentFile: splitFiles[splitFiles.length - 1]?.name ?? '',
         elapsedSeconds: Math.floor((Date.now() - startedAt) / 1000),
       }));
+
+      // 跳过模式：个别坏文件不会中止任务，结束后统一汇总告知。
+      if (failedCount > 0) {
+        window.alert(
+          `分割完成，但有 ${failedCount} 个文件处理失败已跳过：\n` +
+            result.failedFiles!.map((name) => `• ${name}`).join('\n') +
+            '\n\n这些文件可能不完整（缺少 $$GEOMETRYEND），请重新导出或合并后重试。'
+        );
+      }
     } catch (error) {
       setProgress((prev) => ({ ...prev, running: false }));
       window.alert(`CLI 分割失败：${String(error)}`);
