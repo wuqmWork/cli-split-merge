@@ -17,12 +17,12 @@ const EVENT_NAME: &str = "split-progress";
 // 进度上报节流。60ms 兼顾流畅与开销：快速任务也能出现过渡帧，超大文件每秒最多约 17 次 IPC。
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(60);
 
-// v14: CLI 分割属于重 I/O 工作负载，不能按 CPU 核心数无限展开文件级并行。
-const DEFAULT_SPLIT_WRITE_BUFFER_MB: usize = 1;
+// v14.1: CLI 分割属于重 I/O 工作负载，不能按 CPU 核心数无限展开文件级并行，
+// 但也不必过度保守：24 路输出本身写放大有限，4-6 路文件并发可让 NVMe 吃满。
+const DEFAULT_SPLIT_WRITE_BUFFER_MB: usize = 2;
 
-// 自动模式下最多同时处理 3 个 CLI。
-// 32 GB 内存 + 单块 NVMe 场景下，这个值比“CPU 核心数”更合理。
-const AUTO_MAX_FILE_WORKERS: usize = 3;
+// 自动模式下最多同时处理 6 个 CLI（大文件时按阈值自动降档）。
+const AUTO_MAX_FILE_WORKERS: usize = 6;
 
 // 用户手动指定 worker 时仍做安全上限，避免误设 16/32 导致 24 路输出成倍展开。
 const MANUAL_MAX_FILE_WORKERS: usize = 8;
@@ -33,8 +33,8 @@ const AUTO_MAX_GEOMETRY_WORKERS: usize = 6;
 const MANUAL_MAX_GEOMETRY_WORKERS: usize = 8;
 
 const GB: u64 = 1024 * 1024 * 1024;
-const LARGE_FILE_THRESHOLD: u64 = 4 * GB;
-const HUGE_FILE_THRESHOLD: u64 = 16 * GB;
+const LARGE_FILE_THRESHOLD: u64 = 16 * GB;
+const HUGE_FILE_THRESHOLD: u64 = 32 * GB;
 
 #[derive(Debug, Clone, Copy)]
 struct Region {
@@ -383,7 +383,7 @@ pub fn split_cli_files(app: &AppHandle, request: SplitRequest) -> Result<SplitRe
         app,
         "info",
         &format!(
-            "v14 分割调度：文件数={}，最大文件={:.2} GB，文件并发={}，单文件几何线程={}，写缓冲={} MB",
+            "v14.1 分割调度：文件数={}，最大文件={:.2} GB，文件并发={}，单文件几何线程={}，写缓冲={} MB",
             total,
             largest_file as f64 / GB as f64,
             file_workers,
@@ -1131,10 +1131,10 @@ fn largest_input_file_size(input_files: &[String]) -> u64 {
         .unwrap_or(0)
 }
 
-/// v14 文件级并发策略：
+/// v14.1 文件级并发策略：
 ///
-/// 1. 自动模式不再等于 CPU 核心数；
-/// 2. 大文件自动降并发；
+/// 1. 自动模式按文件数分档递增，上限 6；
+/// 2. 大文件自动降并发（≥16 GB cap 4，≥32 GB cap 3）；
 /// 3. 手动 worker 也设置硬上限；
 /// 4. worker 永远不超过输入文件数。
 fn determine_file_workers(input_files: &[String], requested_workers: usize) -> usize {
@@ -1150,7 +1150,9 @@ fn determine_file_workers(input_files: &[String], requested_workers: usize) -> u
     let base_workers = if requested_workers == 0 {
         match total {
             0 | 1 => 1,
-            2..=4 => 2,
+            2 => 2,
+            3..=4 => 3,
+            5..=8 => 4,
             _ => AUTO_MAX_FILE_WORKERS,
         }
     } else {
@@ -1164,9 +1166,9 @@ fn determine_file_workers(input_files: &[String], requested_workers: usize) -> u
 
 fn file_worker_size_cap(largest_file: u64) -> usize {
     if largest_file >= HUGE_FILE_THRESHOLD {
-        1
+        3
     } else if largest_file >= LARGE_FILE_THRESHOLD {
-        2
+        4
     } else {
         AUTO_MAX_FILE_WORKERS
     }
@@ -2127,10 +2129,42 @@ mod tests {
 
     #[test]
     fn v14_large_files_reduce_file_parallelism() {
-        assert_eq!(file_worker_size_cap(1 * GB), 3);
-        assert_eq!(file_worker_size_cap(4 * GB), 2);
-        assert_eq!(file_worker_size_cap(8 * GB), 2);
-        assert_eq!(file_worker_size_cap(16 * GB), 1);
-        assert_eq!(file_worker_size_cap(32 * GB), 1);
+        assert_eq!(file_worker_size_cap(1 * GB), 6);
+        assert_eq!(file_worker_size_cap(15 * GB), 6);
+        assert_eq!(file_worker_size_cap(16 * GB), 4);
+        assert_eq!(file_worker_size_cap(31 * GB), 4);
+        assert_eq!(file_worker_size_cap(32 * GB), 3);
+        assert_eq!(file_worker_size_cap(64 * GB), 3);
+    }
+
+    #[test]
+    fn v14_1_auto_file_workers_tier_by_count() {
+        // 大小未知（0 字节）不触发降档，验证纯文件数分档：
+        // 2→2、3..=4→3、5..=8→4、>8→6
+        let make = |n: usize| (0..n).map(|i| format!("__missing_{i}.cli")).collect::<Vec<_>>();
+        assert_eq!(determine_file_workers(&make(2), 0), 2);
+        assert_eq!(determine_file_workers(&make(3), 0), 3);
+        assert_eq!(determine_file_workers(&make(4), 0), 3);
+        assert_eq!(determine_file_workers(&make(5), 0), 4);
+        assert_eq!(determine_file_workers(&make(8), 0), 4);
+        assert_eq!(determine_file_workers(&make(9), 0), 6);
+        assert_eq!(determine_file_workers(&make(20), 0), 6);
+    }
+
+    #[test]
+    fn v14_1_large_files_still_allow_parallelism() {
+        // v14.1：大文件只降档、不再把并发压到 1-2——
+        // 16 GB 档 cap 4、32 GB 档 cap 3，仍保留可用并发（见上方 cap 断言）。
+        // cap 与文件数分档的交互：cap 不可能把并发抬升，只会压低。
+        let make = |n: usize| {
+            (0..n)
+                .map(|i| format!("__missing_{i}.cli"))
+                .collect::<Vec<_>>()
+        };
+        // 无大文件时 cap = AUTO_MAX(6)，分档结果即最终值
+        assert_eq!(determine_file_workers(&make(8), 0), 4);
+        assert_eq!(determine_file_workers(&make(20), 0), 6);
+        // 手动指定也不超过 size cap（缺失文件按 0 字节 → cap 6）
+        assert_eq!(determine_file_workers(&make(20), 64), 6);
     }
 }

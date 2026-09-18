@@ -32,7 +32,7 @@ const defaultSettings: SettingsState = {
   parallel: true,
   workerCount: 0,
   readBufferMb: 16, // merge 仍使用；split 的 mmap 路径忽略此值
-  writeBufferMb: 1,
+  writeBufferMb: 2, // v14.1: 2 MB 写缓冲更好地摊薄 syscall 开销
   logLevel: 'info',
   logRetentionDays: 14,
   autoClearCache: false,
