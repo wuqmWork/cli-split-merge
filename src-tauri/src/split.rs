@@ -309,9 +309,74 @@ struct OutputFile {
     line_buffer: Vec<u8>,
 }
 
+/// 单区域 POLYLINE 跨记录链式合并器（对齐参考实现 cli_splitter_fast.c 的 PendingPolyline）。
+///
+/// 裁剪后共点连续的折线片段拼成一条输出，减少振镜跳段；
+/// 遇 HATCHES/LAYER 或几何流结束时通过 finish 落盘最后一条链。
+/// 落盘的合并线 kind 固定为 0（与参考实现一致）。
+struct PolylineChain {
+    points: Vec<(f64, f64)>,
+}
+
+impl PolylineChain {
+    fn new() -> Self {
+        Self { points: Vec::new() }
+    }
+
+    /// 并入一段裁剪后的折线片段（调用方保证 piece.len() >= 2）。
+    /// 返回 Some(chain) 表示链在此断开、需要先把返回的链写出。
+    fn push(&mut self, piece: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
+        let mut flushed = None;
+        if let Some(&last) = self.points.last() {
+            // 接续判定与参考实现一致：裁剪后 mm 空间 1e-6 容差。
+            let continuous =
+                (last.0 - piece[0].0).abs() <= 1e-6 && (last.1 - piece[0].1).abs() <= 1e-6;
+            if !continuous {
+                flushed = if self.points.len() >= 2 {
+                    Some(std::mem::take(&mut self.points))
+                } else {
+                    self.points.clear();
+                    None
+                };
+            }
+        }
+        if self.points.is_empty() {
+            self.points.extend_from_slice(piece);
+        } else {
+            // 连续接续：跳过与上段末点重合的共享点。
+            self.points.extend(piece[1..].iter().copied());
+        }
+        flushed
+    }
+
+    /// 几何流中断（HATCHES/LAYER）或结束时调用，返回待写出的最后一条链。
+    fn finish(&mut self) -> Option<Vec<(f64, f64)>> {
+        if self.points.len() >= 2 {
+            Some(std::mem::take(&mut self.points))
+        } else {
+            self.points.clear();
+            None
+        }
+    }
+}
+
+/// 写出一条合并完成的 POLYLINE（kind=0，ID 顺序递增，同参考实现）。
+fn write_chain(
+    chain: Option<Vec<(f64, f64)>>,
+    out: &mut OutputFile,
+    local: Transform2D,
+    unit: f64,
+) -> Result<(), String> {
+    if let Some(points) = chain {
+        let id = out.next_id;
+        out.next_id += 1;
+        write_polyline_buffered(out, id, 0, &points, local, unit)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct Polyline {
-    kind: i32,
     points: Vec<(f64, f64)>,
 }
 
@@ -648,6 +713,8 @@ fn split_one_file(
     // HATCHES 是大文件最常见的热点。24 个区域的容器只创建一次并反复 clear，
     // 避免每条 HATCHES 都分配 24 组 Vec。
     let mut hatch_scratch: Vec<Vec<HatchSegment>> = (0..REGION_COUNT).map(|_| Vec::new()).collect();
+    // POLYLINE 跨记录链式合并缓冲：每区域一条链，遇 HATCHES/LAYER 或几何流结束时落盘。
+    let mut pending: Vec<PolylineChain> = (0..REGION_COUNT).map(|_| PolylineChain::new()).collect();
 
     loop {
         if line_start >= mapped.len() {
@@ -713,16 +780,9 @@ fn split_one_file(
                     if piece.len() < 2 {
                         continue;
                     }
-                    let id = outs[r_index].next_id;
-                    outs[r_index].next_id += 1;
-                    write_polyline_buffered(
-                        &mut outs[r_index],
-                        id,
-                        poly.kind,
-                        &piece,
-                        local,
-                        unit,
-                    )?;
+                    // 不再逐段直写：先并入该区域的合并链，断链时把前一条写出。
+                    let flushed = pending[r_index].push(&piece);
+                    write_chain(flushed, &mut outs[r_index], local, unit)?;
                 }
             }
         } else if starts_with_ascii_ci_bytes(token_bytes, b"$$HATCHES/")
@@ -744,6 +804,11 @@ fn split_one_file(
                 )?);
             }
             let outs = outputs.as_mut().expect("outputs opened");
+            // 与参考实现一致：HATCHES 打断 POLYLINE 链，先落盘所有未完成的链。
+            for r_index in 0..REGION_COUNT {
+                let flushed = pending[r_index].finish();
+                write_chain(flushed, &mut outs[r_index], transforms[r_index], unit)?;
+            }
             process_hatches_line_bytes(
                 normalized_bytes,
                 unit,
@@ -759,6 +824,11 @@ fn split_one_file(
             preamble.push(String::from_utf8_lossy(normalized_bytes).into_owned());
         } else if starts_with_ascii_ci_bytes(token_bytes, b"$$LAYER/") {
             if let Some(outs) = outputs.as_mut() {
+                // LAYER 同样打断 POLYLINE 链，先落盘再写层标记。
+                for r_index in 0..REGION_COUNT {
+                    let flushed = pending[r_index].finish();
+                    write_chain(flushed, &mut outs[r_index], transforms[r_index], unit)?;
+                }
                 for out in outs {
                     write_raw_line(&mut out.writer, normalized_bytes)
                         .map_err(|e| format!("写入 LAYER 失败：{e}"))?;
@@ -823,6 +893,15 @@ fn split_one_file(
             unit,
             write_capacity,
         )?);
+    }
+
+    // 几何流结束：落盘所有区域剩余的合并链，再收尾输出文件。
+    {
+        let outs = outputs.as_mut().expect("outputs exist");
+        for r_index in 0..REGION_COUNT {
+            let flushed = pending[r_index].finish();
+            write_chain(flushed, &mut outs[r_index], transforms[r_index], unit)?;
+        }
     }
 
     finalize_outputs(outputs.expect("outputs exist"))?;
@@ -1381,7 +1460,8 @@ fn parse_polyline_bytes(line: &[u8], unit: f64) -> Result<Polyline, String> {
     let payload = &line[slash + 1..];
     let mut it = payload.split(|&b| b == b',');
     let _id = next_field_bytes(&mut it, "POLYLINE ID")?;
-    let kind = parse_i32_bytes(next_field_bytes(&mut it, "POLYLINE 类型")?, "POLYLINE 类型")?;
+    // kind 仍参与格式校验；合并输出统一写 kind=0（与参考实现一致），故不再保留。
+    let _kind = parse_i32_bytes(next_field_bytes(&mut it, "POLYLINE 类型")?, "POLYLINE 类型")?;
     let count = parse_usize_bytes(next_field_bytes(&mut it, "POLYLINE 点数")?, "POLYLINE 点数")?;
     if count < 2 || count > 1_000_000 {
         return Err(format!("POLYLINE 点数异常：{count}"));
@@ -1392,7 +1472,7 @@ fn parse_polyline_bytes(line: &[u8], unit: f64) -> Result<Polyline, String> {
         let y = parse_f64_bytes(next_field_bytes(&mut it, "POLYLINE Y")?, "POLYLINE Y")? * unit;
         points.push((x, y));
     }
-    Ok(Polyline { kind, points })
+    Ok(Polyline { points })
 }
 
 fn normalize_cli_line_bytes(line: &[u8]) -> &[u8] {
@@ -1945,6 +2025,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn polyline_chain_merges_connected_pieces() {
+        // 两段共点线段应合并成一条 3 点链，只落盘一次。
+        let mut chain = PolylineChain::new();
+        assert_eq!(chain.push(&[(0.0, 0.0), (1.0, 0.0)]), None);
+        assert_eq!(chain.push(&[(1.0, 0.0), (2.0, 5.0)]), None);
+        let finished = chain.finish().expect("应得到一条合并链");
+        assert_eq!(
+            finished,
+            vec![(0.0, 0.0), (1.0, 0.0), (2.0, 5.0)],
+            "共享点 (1,0) 只保留一份"
+        );
+    }
+
+    #[test]
+    fn polyline_chain_breaks_on_discontinuity() {
+        // 端点不连续时，push 返回前一条链，新片段重新开链。
+        let mut chain = PolylineChain::new();
+        assert_eq!(chain.push(&[(0.0, 0.0), (1.0, 0.0)]), None);
+        let flushed = chain.push(&[(5.0, 5.0), (6.0, 6.0)]).expect("应断链");
+        assert_eq!(flushed, vec![(0.0, 0.0), (1.0, 0.0)]);
+        assert_eq!(chain.finish(), Some(vec![(5.0, 5.0), (6.0, 6.0)]));
+    }
+
+    #[test]
+    fn polyline_chain_tolerates_epsilon_gap() {
+        // 1e-6 mm 容差内的间隙视为连续（与参考实现 same_point 一致）。
+        let mut chain = PolylineChain::new();
+        assert_eq!(chain.push(&[(0.0, 0.0), (1.0, 0.0)]), None);
+        assert_eq!(chain.push(&[(1.0 + 5e-7, 0.0), (2.0, 0.0)]), None);
+        assert_eq!(
+            chain.finish(),
+            Some(vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
+        );
+    }
+
+    #[test]
+    fn polyline_chain_finish_without_enough_points_is_none() {
+        let mut chain = PolylineChain::new();
+        assert_eq!(chain.finish(), None, "空链 finish 应为 None");
+        // push 后 finish 消费掉内容，再次 finish 为 None。
+        let mut chain = PolylineChain::new();
+        assert_eq!(chain.push(&[(0.0, 0.0), (1.0, 1.0)]), None);
+        assert!(chain.finish().is_some());
+        assert_eq!(chain.finish(), None);
+    }
+
+    #[test]
     fn mapping_is_complete_and_unique() {
         let mut ids = REGIONS.iter().map(|r| r.folder_id).collect::<Vec<_>>();
         ids.sort_unstable();
@@ -2064,7 +2191,6 @@ mod tests {
     #[test]
     fn byte_polyline_parser_matches_ascii_values() {
         let p = parse_polyline_bytes(b"$$POLYLINE/7,1,3,0,0,1.5,-2,3,4", 2.0).unwrap();
-        assert_eq!(p.kind, 1);
         assert_eq!(p.points.len(), 3);
         assert_eq!(p.points[0], (0.0, 0.0));
         assert_eq!(p.points[1], (3.0, -4.0));
